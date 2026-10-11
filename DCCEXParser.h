@@ -64,6 +64,9 @@ struct DCCEXParser
 
     static bool stashBusy;
     static byte stashTarget;
+#ifdef WIFI_TELNET
+    static uint16_t stashGeneration;
+#endif
     static Print * stashStream;
     static RingStream * stashRingStream;
     

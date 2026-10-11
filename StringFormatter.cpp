@@ -17,6 +17,7 @@
  *  along with CommandStation.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "StringFormatter.h"
+#include "TelnetConsole.h"
 #include <stdarg.h>
 #include "DisplayInterface.h"
 #include "CommandDistributor.h"
@@ -39,6 +40,16 @@ void StringFormatter::diag( const FSH* input...) {
   va_start(args, input);
   send2(&USB_SERIAL,input,args);
   USB_SERIAL.print(F(" *>\n"));
+  va_end(args);
+#ifdef WIFI_TELNET
+  Print *remote = TelnetConsole::beginDiagnostic();
+  if (remote) {
+    va_start(args, input);
+    send2(remote, input, args);
+    va_end(args);
+    TelnetConsole::endDiagnostic();
+  }
+#endif
 }
 
 void StringFormatter::lcd(byte row, const FSH* input...) {
@@ -101,6 +112,7 @@ void StringFormatter::send(Print & stream, const FSH* input...) {
 }
 
 void StringFormatter::send2(Print * stream,const FSH* format, va_list args) {
+  if (!stream) return;
     
   // thanks to Jan Turoň  https://arduino.stackexchange.com/questions/56517/formatting-strings-in-arduino-for-output
 

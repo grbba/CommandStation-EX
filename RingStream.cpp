@@ -206,3 +206,33 @@ void RingStream::flush() {
   _ringClient = NO_CLIENT;
 }
   
+
+#ifdef WIFI_TELNET
+void RingStream::discardClient(byte client, int pendingPayload) {
+  // This optional WiFi console is supported on 32-bit targets, where flash
+  // strings are stored inline and frame lengths equal stored byte counts.
+  static_assert(sizeof(void *) > 2, "Telnet queue cleanup requires inline flash strings");
+  if (_ringClient != NO_CLIENT) return;
+  int remaining = (_pos_write - _pos_read + _len) % _len;
+  if (pendingPayload < 0 || pendingPayload > remaining) return;
+  int source = (_pos_read + pendingPayload) % _len;
+  int destination = source;
+  remaining -= pendingPayload;
+  while (remaining) {
+    if (remaining < 3) return;
+    byte target = _buffer[source];
+    int count = (_buffer[(source + 1) % _len] << 8) | _buffer[(source + 2) % _len];
+    int frame = count + 3;
+    if (frame > remaining) return;
+    if ((target & 0x3f) != client) {
+      for (int i = 0; i < frame; i++) {
+        _buffer[destination] = _buffer[(source + i) % _len];
+        destination = (destination + 1) % _len;
+      }
+    }
+    source = (source + frame) % _len;
+    remaining -= frame;
+  }
+  _pos_write = destination;
+}
+#endif

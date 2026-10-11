@@ -113,6 +113,7 @@ Once a new OPCODE is decided upon, update this list.
 #include "CommandDistributor.h"
 #include "EEStore.h"
 #include "DIAG.h"
+#include "TelnetConsole.h"
 #include "TrackManager.h"
 #include "DCCTimer.h"
 #include "EXRAIL2.h"
@@ -141,6 +142,9 @@ bool DCCEXParser::stashBusy;
 Print *DCCEXParser::stashStream = NULL;
 RingStream *DCCEXParser::stashRingStream = NULL;
 byte DCCEXParser::stashTarget=0;
+#ifdef WIFI_TELNET
+uint16_t DCCEXParser::stashGeneration=0;
+#endif
 
 // This is a JMRI command parser.
 // It doesnt know how the string got here, nor how it gets back.
@@ -1582,12 +1586,18 @@ bool DCCEXParser::stashCallback(Print *stream, int16_t p[MAX_COMMAND_PARAMS], Ri
     stashStream = stream;
     stashRingStream=ringStream;
     if (ringStream) stashTarget= ringStream->peekTargetMark();
+#ifdef WIFI_TELNET
+    if (ringStream) stashGeneration = TelnetConsole::generation(stashTarget);
+#endif
     memcpy(stashP, p, MAX_COMMAND_PARAMS * sizeof(p[0]));
     return true;
 }
 
 Print * DCCEXParser::getAsyncReplyStream() {
        if (stashRingStream) {
+#ifdef WIFI_TELNET
+           if (stashGeneration != TelnetConsole::generation(stashTarget)) return nullptr;
+#endif
            stashRingStream->mark(stashTarget);
            return stashRingStream;
        }
@@ -1595,7 +1605,12 @@ Print * DCCEXParser::getAsyncReplyStream() {
 }
 
 void DCCEXParser::commitAsyncReplyStream() {
-     if (stashRingStream) stashRingStream->commit();
+     if (stashRingStream) {
+#ifdef WIFI_TELNET
+       if (stashGeneration == TelnetConsole::generation(stashTarget))
+#endif
+         stashRingStream->commit();
+     }
      stashBusy = false;
 }
 

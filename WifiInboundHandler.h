@@ -53,6 +53,8 @@ class WifiInboundHandler {
           IPD4_CLIENT,  // got +IPD,  reading cient id
           IPD5,        // got +IPD,c 
           IPD6_LENGTH, // got +IPD,c, reading length 
+          IPD_ROUTE,   // inspect first payload byte before application filtering
+          IPD_TELNET,  // raw Telnet/console bytes
           IPD_DATA,    // got +IPD,c,ll,: collecting data
           IPD_IGNORE_DATA, // got +IPD,c,ll,: ignoring the data that won't fit inblound Ring
           IPD_PRESCAN,    // prescanning data for websocket keys
@@ -66,6 +68,8 @@ class WifiInboundHandler {
    void loop1();
    INBOUND_STATE loop2();
    void purgeCurrentCIPSEND();
+   void beginPacketData();
+   void consumePacketData(int ch);
    Stream * wifiStream;
    
    static const int INBOUND_RING = 128;
@@ -77,6 +81,8 @@ class WifiInboundHandler {
    RingStream * outboundRing;
      
   LOOP_STATE loopState=ANYTHING;
+  bool preferConsole = true;
+  byte prescanPoint = 0;
   int runningClientId;   // latest client inbound processing data or CLOSE
   int dataLength; // dataLength of +IPD
   int clientPendingCIPSEND=-1;
