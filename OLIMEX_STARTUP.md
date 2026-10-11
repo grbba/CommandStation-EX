@@ -12,8 +12,8 @@ This optional build displays firmware/board identity, WiFi setup status, the ass
 | 6 | SDA (touch) | PB9, CN12 |
 | 7 | D/C | PC11, CN11 |
 | 8 | MOSI | PC12, CN11 |
-| 9 | Clock | PD2, CN11 |
-| 10 | Chip select | PC10, CN11 |
+| 9 | Clock | PC10, CN11 |
+| 10 | Chip select | PD2, CN11 |
 
 [Olimex's module documentation](https://github.com/OLIMEX/MOD-LCD2.8RTP/blob/master/README.md) explains that UEXT pin 7 is D/C, replacing standard UEXT MISO. The [Rev B schematic](https://github.com/OLIMEX/MOD-LCD2.8RTP/blob/master/HARDWARE/SCHEMATICS/Hardware-revision-B/MOD-LCD2.8RTP_RevB.pdf) confirms those signal roles. Pins 3/4 are not needed by this implementation. Touch and backlight control are not implemented; PB8/PB9 are not reconfigured by the display adapter. The ESP-01 remains on Serial6/USART6 (PG9/PG14).
 
@@ -44,3 +44,19 @@ The build has not been flashed or visually verified yet. Preserve the installed 
 5. Check display orientation, stale character clearing, and station responsiveness during display updates. Confirm that the display's I2C touch hardware does not cause conflicts on the existing bus.
 
 This first patch exposes startup information. Live WiFi reconnection/address-change reporting and Telnet diagnostics remain subsequent milestones.
+
+## White-screen diagnostic
+
+If a full power cycle still leaves the display white, a standalone probe is available. It uses the same pins/library but excludes all command-station code and waits one second for the LCD power-on reset before initialization.
+
+With track power off, build/upload:
+
+```sh
+pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex-Probe -t upload
+```
+
+This temporarily replaces the command station: no DCC generation or WiFi is running. Expected output repeats red, green, blue, then white text on black. Optional serial output at 115200 confirms the test reaches initialization but cannot confirm LCD reception (there is no MISO).
+
+If colors/text appear, investigate integration or startup timing. If it remains white, verify power-on reset, physical UEXT signal continuity/orientation, and the four supplied GPIO connections before changing the station code. Restore normal display firmware with the Nucleo-F439ZI-Olimex upload command after the test.
+
+The first hardware test stayed white because clock and chip select were reversed in the reported wiring. Swapping those assignments in software produced the correct colors. Both the standalone probe and station adapter now use the confirmed mapping above: clock=PC10 and CS=PD2. No physical rewiring is needed. `Nucleo-F439ZI-Olimex-ProbeSwap` remains an alias for the corrected probe so the previous test command still works. Full station display acceptance is pending.

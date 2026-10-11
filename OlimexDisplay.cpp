@@ -5,7 +5,7 @@
 #include <string.h>
 
 OlimexDisplay::OlimexDisplay()
-  : _tft(PC10, PC11, PC12, PD2, -1, -1) {
+  : _tft(PD2, PC11, PC12, PC10, -1, -1) {
   memset(_text, ' ', sizeof(_text));
   memset(_drawn, ' ', sizeof(_drawn));
   addDisplay(0);

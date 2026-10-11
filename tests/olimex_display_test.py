@@ -34,7 +34,7 @@ public:
   static inline char screen[8][26];
   int row=0, col=0;
   Adafruit_ILI9341(int cs,int dc,int mosi,int clk,int rst,int miso) {
-    assert(cs==PC10 && dc==PC11 && mosi==PC12 && clk==PD2);
+    assert(cs==PD2 && dc==PC11 && mosi==PC12 && clk==PC10);
     assert(rst==-1 && miso==-1);
   }
   void begin() {}
