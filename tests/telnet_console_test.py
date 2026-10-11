@@ -118,6 +118,9 @@ int main(){
  packet(0,std::string(1,(char)255));packet(0,std::string(1,(char)253));packet(0,std::string(1,(char)42));
  assert(uart.output.find(std::string("\xff\xfc\x2a",3))!=std::string::npos);
  enter(0);assert(uart.output.find("DCC-EX console")!=std::string::npos);
+ // Positive acknowledgements and duplicate requests must not create loops.
+ size_t negotiationStart=uart.output.size();packet(0,std::string("\xff\xfd\x03",3));
+ packet(0,std::string("\xff\xfd\x03",3));assert(uart.output.size()==negotiationStart);
  // CRLF and CR-NUL normalized; fragmented commands preserved.
  size_t before=CommandDistributor::calls.size();
  packet(0,"<");packet(0,"s>");packet(0,"\r");packet(0,std::string("\0",1));
@@ -164,13 +167,19 @@ int main(){
  // Subnegotiation and IAC-IAC never reach the DCC parser.
  packet(0,std::string("\xff\xfa",2)+"abc"+std::string("\xff\xf0",2));
  packet(0,"<s>\n");assert(CommandDistributor::calls.back().second=="<s>");
- // Negative negotiation replies must not generate reply loops.
+ // Disabling an enabled option is acknowledged once; repeats are silent.
+ packet(0,std::string("\xff\xfe\x03",3));
  start=uart.output.size();packet(0,std::string("\xff\xfe\x03",3));
  assert(uart.output.size()==start);
  // Close while literal-IAC output is awaiting CIPSEND must purge safely.
  acknowledge=false;packet(0,"help\n");
  close(0);acknowledged=uart.output.size();acknowledge=true;cycles();
  enter(0);packet(0,"<s>\n");assert(CommandDistributor::calls.back().second=="<s>");
+ // Failed reply commit must release the mark so later console output recovers.
+ RingStream bounded(16);bounded.mark(1);bounded.print("reply too large for this ring");
+ assert(!bounded.commit());assert(bounded.peekTargetMark()==RingStream::NO_CLIENT);
+ assert(bounded.read()==-1);bounded.mark(2);bounded.print("ok");assert(bounded.commit());
+ assert(bounded.read()==2);assert(bounded.count()==2);assert(bounded.read()=='o');assert(bounded.read()=='k');
  // Queue cleanup preserves another client's in-flight payload and survivors.
  RingStream cleanup(128);
  cleanup.mark(1);cleanup.print("a");cleanup.commit();

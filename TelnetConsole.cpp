@@ -18,6 +18,8 @@ struct Session {
   Decoder decoder = TEXT;
   byte optionCommand = 0;
   bool afterCR = false;
+  bool suppressGoAhead = false;
+  bool offeringSGA = false;
   bool discard = false;
   uint16_t length = 0;
   uint16_t generation = 0;
@@ -88,8 +90,10 @@ void lineReady(byte client) {
         owner = client;
         s.mode = CONSOLE;
         // Client supplies local echo; server supports suppress-go-ahead.
-        const byte negotiation[] = {IAC, WONT, 1, IAC, WILL, 3};
-        enqueue(client, negotiation, sizeof(negotiation));
+        if (!s.suppressGoAhead && !s.offeringSGA) {
+          const byte negotiation[] = {IAC, WILL, 3};
+          if (enqueue(client, negotiation, sizeof(negotiation))) s.offeringSGA = true;
+        }
         message(client, "\r\nDCC-EX console. Raw <commands>; help; diag on/off.\r\n");
         prompt(client);
       }
@@ -151,9 +155,17 @@ void TelnetConsole::receive(byte client, byte value) {
       return;
     case OPTION: {
       byte response = 0;
-      if (s.optionCommand == DO) response = value == 3 ? WILL : WONT;
+      if (s.optionCommand == DO && value == 3) {
+        if (s.offeringSGA) s.offeringSGA = false; // acknowledge our offer
+        else if (!s.suppressGoAhead) response = WILL;
+        s.suppressGoAhead = true;
+      } else if (s.optionCommand == DONT && value == 3) {
+        if (s.suppressGoAhead && !s.offeringSGA) response = WONT;
+        s.offeringSGA = false;
+        s.suppressGoAhead = false;
+      } else if (s.optionCommand == DO) response = WONT;
       else if (s.optionCommand == WILL) response = DONT;
-      // Do not acknowledge negative replies, which can create negotiation loops.
+      // Duplicate enabled options and negative acknowledgements get no reply.
       if (response) {
         byte bytes[] = {IAC, response, value};
         enqueue(client, bytes, sizeof(bytes));

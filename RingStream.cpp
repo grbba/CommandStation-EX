@@ -179,6 +179,7 @@ bool RingStream::commit() {
         // just throw it away 
         _pos_write=_mark;
         _overflow=false;
+        _ringClient=NO_CLIENT;
         return false; // commit failed
   }
   if (_count==0) {
