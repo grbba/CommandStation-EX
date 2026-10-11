@@ -21,4 +21,4 @@ jobs:
       - name: Use public example configuration
         run: cp config.example.h config.h
       - name: Build with and without the optional display
-        run: pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex -e Nucleo-F439ZI
+        run: pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex -e Nucleo-F439ZI-DisplayDisabled

@@ -25,10 +25,11 @@ Keep the working WiFi/motor configuration in ignored `config.h`; do not publish 
 
 ```sh
 pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex
+pio run -c platformio-olimex.ini -e Nucleo-F439ZI-DisplayDisabled
 python3 tests/olimex_display_test.py
 ```
 
-The normal `Nucleo-F439ZI` environment leaves the optional adapter disabled. The display environment pins STM32 platform 19.7.1 and Adafruit ILI9341 1.6.4. PlatformIO also resolves the driver's declared dependencies; their resolved versions appear in its build log.
+The normal `Nucleo-F439ZI` environment leaves the optional adapter disabled. `Nucleo-F439ZI-DisplayDisabled` provides a comparison build with the same STM32 19.7.1 toolchain as the display environment; the production tag's 19.0.0 framework dependency is no longer available from the registry. The display environment pins STM32 platform 19.7.1 and Adafruit ILI9341 1.6.4. PlatformIO also resolves the driver's declared dependencies; their resolved versions appear in its build log.
 
 No full-screen framebuffer is allocated. Two fixed 8x26 character grids retain requested/rendered content. Runtime updates emit at most one changed character per `DisplayInterface::loop()` call. Boot refreshes finish synchronously before `DCC::begin()`. Runtime SPI timing on the actual board still needs measurement; a one-character bound is not a measured execution-time guarantee.
 
