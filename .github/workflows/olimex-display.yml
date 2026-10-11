@@ -1,7 +1,7 @@
 name: Display and WiFi console checks
 on:
   push:
-    branches: [grbba-wifi-telnet]
+    branches: [grbba-wifi-telnet, grbba-wifi-telnet-console]
   pull_request:
 permissions:
   contents: read
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test bounded rendering with sanitizers
+      - name: Test display and Telnet routing with sanitizers
         run: |
           python3 tests/olimex_display_test.py
           python3 tests/telnet_console_test.py
@@ -22,5 +22,5 @@ jobs:
         run: pip install platformio==6.1.19
       - name: Use public example configuration
         run: cp config.example.h config.h
-      - name: Build with and without the optional display
+      - name: Build display, console, and disabled configurations
         run: pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex -e Nucleo-F439ZI-DisplayDisabled -e Nucleo-F439ZI-Telnet
