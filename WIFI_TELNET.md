@@ -69,3 +69,11 @@ To return to the display-only firmware:
 ```sh
 pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex -t upload
 ```
+
+A repeatable read-only network acceptance script is also available:
+
+```sh
+python3 tests/hardware/wifi_console_acceptance.py <station-IP>
+```
+
+It requests station status and memory diagnostics, opens a second WiThrottle session for metadata only, checks output isolation, and reconnects the console while the throttle session remains open. It does not acquire locomotives or change power/speed/accessories. On 11 October 2026 this script passed against the user's F439ZI/ESP-01: console status, simultaneous WiThrottle handshake, remote diagnostic delivery/isolation, subscription reset, and retained throttle-session responsiveness. Actual iPad interaction, physical throttle controls, and boot without USB remain user acceptance checks.
