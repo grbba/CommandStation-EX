@@ -39,7 +39,18 @@
 //    SSD1306AsciiWire for I2C OLED driver with SSD1306 or SH1106 controllers;
 //    LiquidCrystal_I2C for I2C LCD driver for HD44780 with PCF8574 'backpack'.
 
-#if defined(OLED_DRIVER)
+#if defined(OLIMEX_LCD)
+  #if defined(OLED_DRIVER) || defined(LCD_DRIVER)
+    #error Select only one primary display driver
+  #endif
+  #include "OlimexDisplay.h"
+  #define DISPLAY_START(xxx) { \
+    DisplayInterface *t = new OlimexDisplay(); \
+    t->begin(); \
+    xxx; \
+    t->refresh(); \
+  }
+#elif defined(OLED_DRIVER)
   #define DISPLAY_START(xxx) { \
     DisplayInterface *t = new Display(new SSD1306AsciiWire(OLED_DRIVER)); \
     t->begin(); \
