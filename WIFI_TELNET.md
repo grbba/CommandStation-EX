@@ -11,7 +11,7 @@ pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Telnet
 pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Telnet -t upload
 ```
 
-In an iPad Telnet app, set host to the IP shown on the LCD and port to **2560**. Enable **local echo** and use Enter/newline to submit a line. The server refuses remote echo and supports suppress-go-ahead; this avoids duplicate characters when a client provides local echo. Desktop Telnet works the same way. The port remains a raw multi-protocol listener: there is no automatic banner for ordinary throttle clients.
+In an iPad Telnet app, set host to the IP shown on the LCD and port to **2560**. Use the app's normal automatic/default echo setting and Enter/newline to submit a line. The server offers **server-side echo** and suppress-go-ahead as soon as a client sends Telnet negotiation bytes or starts `#console`. A short entry prompt is sent before activation so clients can finish negotiation before accepting keyboard input. If you previously forced local echo on, turn it off to avoid duplicate characters. Clients that refuse server echo can still use local echo. Desktop Telnet works the same way. The port remains a raw multi-protocol listener: there is no automatic banner for ordinary throttle clients.
 
 After connecting, type this as the first application line:
 
@@ -38,12 +38,12 @@ Raw `<commands>` execute through CommandDistributor/DCCEXParser, preserving norm
 
 ## Queues, routing, and limits
 
-- Console input is assembled independently per client, including Telnet negotiation split across packets. Unsupported options are refused; subnegotiation is ignored without accumulating data.
+- Console input is assembled independently per client, including Telnet negotiation split across packets. Option replies and keystroke echo are coalesced in bounded per-session buffers so a negotiation burst does not consume one output slot per option. Unsupported options are refused; subnegotiation is ignored without accumulating data.
 - Four complete commands and eight output messages are buffered with fixed bounds. Command admission reports a full queue. Diagnostic bursts are dropped before consuming the reserved control-message capacity, with a subsequent loss count.
-- Diagnostic output starts on a fresh line and restores the prompt/partially typed local-echo input. It is delivered only to the subscribed console; no console greeting or diagnostics are sent to ordinary throttle sessions.
+- Diagnostic output starts on a fresh line and restores the prompt/partially typed input. It is delivered only to the subscribed console; no console greeting or diagnostics are sent to ordinary throttle sessions.
 - WiFi transport tracing remains serial-only to prevent diagnostics about transmitting diagnostics from creating an output loop. Old boot diagnostics are not replayed; the LCD and `<s>` provide startup/status information.
 - Console commands and ordinary inbound traffic alternate when both are pending, while retaining WiThrottle housekeeping and existing AT CIPSEND scheduling.
-- Telnet's literal 0xff bytes use a flagged raw-output path, because RingStream normally interprets 0xff as a flash-string marker. Ordinary command/WebSocket output retains its existing path.
+- Telnet's literal 0xff bytes use a flagged raw-output path, because RingStream normally interprets 0xff as a flash-string marker. Console command replies carry a separate text marker for CRLF normalization and IAC escaping while retaining logical client IDs for callbacks/virtual displays. Ordinary throttle/WebSocket output keeps its existing format.
 - Disconnect/error handling releases console/subscription state and removes queued messages for that socket while preserving another client's in-flight payload. Session generations reject stale console commands/diagnostics and delayed programming replies after socket reuse. Programming operations themselves are not canceled by closing a console.
 - This feature targets the confirmed 32-bit F439ZI setup. Plain Telnet is for the trusted local network; no Internet exposure or authentication service is included.
 
@@ -58,7 +58,7 @@ python3 tests/telnet_console_test.py
 Test on the real board:
 
 1. Load the Telnet environment and confirm the display/IP and existing WiThrottle connection still work.
-2. Open the iPad or desktop Telnet connection to port 2560, enter `#console`, then `<s>`.
+2. Open the iPad or desktop Telnet connection to port 2560, finish negotiation, enter `#console`, then `<s>`. Confirm single-character echo, Backspace/Delete, and Enter without a visible `^M`.
 3. Enter `diag on`, then `<D RAM>`; confirm a diagnostic appears only in the console.
 4. Operate WiThrottle while sending console commands. Verify turnout/sensor/power updates and continued throttle responses.
 5. Close/reopen the console while the throttle remains connected. Repeat diagnostic subscription; it must be off after reconnect.
@@ -77,3 +77,15 @@ python3 tests/hardware/wifi_console_acceptance.py <station-IP>
 ```
 
 It requests station status and memory diagnostics, opens a second WiThrottle session for metadata only, checks output isolation, and reconnects the console while the throttle session remains open. It does not acquire locomotives or change power/speed/accessories. On 11 October 2026 this script passed against the user's F439ZI/ESP-01: console status, simultaneous WiThrottle handshake, remote diagnostic delivery/isolation, subscription reset, and retained throttle-session responsiveness. Actual iPad interaction, physical throttle controls, and boot without USB remain user acceptance checks.
+
+## Terminal compatibility follow-up
+
+The original local-echo-only build worked from Mac Telnet but the user reported Mocha on iPad stalled during negotiation and Mac Enter displayed `^M`. The updated handler offers ECHO/SGA before console activation, accepts SGA in both directions, negotiates server echo, echoes Enter as CRLF, and converts console replies from LF to CRLF once. Host tests cover a mobile-style multi-option burst before application input, duplicate acknowledgements, negotiated echo/editing, and unchanged throttle output. A real installed Mac Telnet client also passed negotiation, server echo, editing, and Enter against a localhost bridge running the actual console/ring code. This does not establish Mocha compatibility until the updated firmware is uploaded and tested on the iPad.
+
+To repeat the real Mac client test (requires a local `telnet` executable):
+
+```sh
+DCCEX_TEST_MAC_TELNET=1 python3 tests/telnet_console_test.py
+```
+
+The echo/SGA behavior follows [RFC 857](https://www.rfc-editor.org/rfc/rfc857.html) and [RFC 858](https://www.rfc-editor.org/rfc/rfc858.html).

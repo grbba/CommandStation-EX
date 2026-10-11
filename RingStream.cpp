@@ -26,6 +26,7 @@
 
 #include "RingStream.h"
 #include "DIAG.h"
+#include "TelnetConsole.h"
 
 const byte FLASH_INSERT_MARKER=0xff;
 
@@ -43,6 +44,16 @@ RingStream::RingStream( const uint16_t len)
 }
 
 size_t RingStream::write(uint8_t b) {
+#ifdef WIFI_TELNET
+  if (_ringClient != NO_CLIENT && (_ringClient & TelnetConsole::TEXT_MARKER)) {
+    if (b == '\n' && !_lastCR && !writeByte('\r')) return 0;
+    _lastCR = b == '\r';
+    if (b == 0xff && !writeByte(b)) return 0;
+  }
+  return writeByte(b);
+}
+size_t RingStream::writeByte(uint8_t b) {
+#endif
   if (_overflow) return 0;
   _buffer[_pos_write] = b;
   ++_pos_write;
@@ -153,6 +164,11 @@ int RingStream::freeSpace() {
 
 // mark start of message with client id (0...9)
 void RingStream::mark(uint8_t b) {
+#ifdef WIFI_TELNET
+    if (!(b & (TelnetConsole::CLIENT_MARKER | 0x80)) && TelnetConsole::isConsole(b))
+      b |= TelnetConsole::TEXT_MARKER;
+    _lastCR = false;
+#endif
     //DIAG(F("RS mark client %d at %d core %d"), b, _pos_write, xPortGetCoreID());
     _ringClient = b;
     _mark=_pos_write;
@@ -165,6 +181,9 @@ void RingStream::mark(uint8_t b) {
 // peekTargetMark is used by the parser stash routines to know which client
 // to send a callback response to some time later. 
 uint8_t RingStream::peekTargetMark() {
+#ifdef WIFI_TELNET
+  if (_ringClient != NO_CLIENT) return _ringClient & ~TelnetConsole::TEXT_MARKER;
+#endif
   return _ringClient;
 }
 
@@ -225,7 +244,7 @@ void RingStream::discardClient(byte client, int pendingPayload) {
     int count = (_buffer[(source + 1) % _len] << 8) | _buffer[(source + 2) % _len];
     int frame = count + 3;
     if (frame > remaining) return;
-    if ((target & 0x3f) != client) {
+    if ((target & TelnetConsole::CLIENT_MASK) != client) {
       for (int i = 0; i < frame; i++) {
         _buffer[destination] = _buffer[(source + i) % _len];
         destination = (destination + 1) % _len;

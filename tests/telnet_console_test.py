@@ -62,7 +62,7 @@ class CommandDistributor {public:
  static inline std::vector<std::pair<byte,std::string>> calls;
  static void parse(byte id,byte* input,RingStream* ring){
   calls.emplace_back(id,(char*)input);
-  ring->mark(id);ring->print("reply\r\n");ring->commit();
+  ring->mark(id);ring->print("reply\n");ring->commit();
  }
  static void forget(byte id){TelnetConsole::forget(id);}
 };
@@ -114,6 +114,23 @@ int main(){
  packet(1,"NThrottle\n");
  assert(CommandDistributor::calls.back()==std::make_pair((byte)1,std::string("NThrottle\n")));
  assert(uart.output.find("DCC-EX console")==std::string::npos);
+ assert(uart.output.find("reply\n")!=std::string::npos);
+ assert(uart.output.find("reply\r\n")==std::string::npos);
+ // A mobile-style option flurry is handled before any application text.
+ std::string options;
+ for(byte option: {byte(1),byte(3),byte(24),byte(31),byte(32),byte(34),byte(36),byte(39),byte(42),byte(44),byte(45),byte(46)}) {
+   options += std::string(1,(char)255)+std::string(1,(char)253)+std::string(1,(char)option);
+ }
+ options += std::string("\xff\xfb\x03",3);
+ size_t negotiationOutput=uart.output.size();packet(4,options);
+ std::string initial=uart.output.substr(negotiationOutput);
+ assert(initial.find("enter #console")!=std::string::npos);
+ assert(initial.find(std::string("\xff\xfb\x01",3))!=std::string::npos);
+ assert(initial.find(std::string("\xff\xfb\x03",3))!=std::string::npos);
+ assert(initial.find(std::string("\xff\xfd\x03",3))!=std::string::npos);
+ for(byte option: {byte(24),byte(31),byte(32),byte(34),byte(36),byte(39),byte(42),byte(44),byte(45),byte(46)})
+   assert(initial.find(std::string("\xff\xfc",2)+std::string(1,(char)option))!=std::string::npos);
+ close(4);
  // Byte-wise option negotiation must survive the real ring's 0xff marker handling.
  packet(0,std::string(1,(char)255));packet(0,std::string(1,(char)253));packet(0,std::string(1,(char)42));
  assert(uart.output.find(std::string("\xff\xfc\x2a",3))!=std::string::npos);
@@ -149,6 +166,22 @@ int main(){
  packet(0,"<s");diagnostic("while typing");cycles();
  assert(uart.output.find("while typing *>\r\ndcc> <s")!=std::string::npos);
  packet(0,">\n");
+ // Echo is negotiated, including acknowledgements received byte by byte.
+ packet(0,std::string(1,(char)255));packet(0,std::string(1,(char)253));packet(0,std::string(1,(char)1));
+ size_t echoStart=uart.output.size();packet(0,"x");
+ assert(uart.output.substr(echoStart).find("x")!=std::string::npos);
+ echoStart=uart.output.size();packet(0,std::string(1,(char)127));
+ assert(uart.output.substr(echoStart).find("\b \b")!=std::string::npos);
+ echoStart=uart.output.size();packet(0,"<s>\r\n");
+ std::string echoed=uart.output.substr(echoStart);
+ assert(echoed.find("<s>\r\n")!=std::string::npos);
+ assert(echoed.find("reply\r\n")!=std::string::npos);
+ assert(echoed.find("\r\r\n")==std::string::npos);
+ echoStart=uart.output.size();packet(0,std::string("\xff\xfd\x01",3));
+ assert(uart.output.size()==echoStart); // no duplicate WILL ECHO
+ packet(0,std::string("\xff\xfe\x01",3));
+ echoStart=uart.output.size();packet(0,"y");
+ assert(uart.output.size()==echoStart);packet(0,"\b\n");
  // Queue saturation drops diagnostics but allows control and reports loss.
  for(int n=0;n<100;n++)diagnostic("burst");cycles(300);
  assert(uart.output.find("Dropped ")!=std::string::npos);
@@ -197,11 +230,17 @@ int main(){
  wrapped.mark(2);wrapped.print("keep");wrapped.commit();wrapped.discardClient(0,0);
  assert(wrapped.read()==2);assert(wrapped.count()==4);
  for(char c:std::string("keep"))assert(wrapped.read()==c);assert(wrapped.read()==-1);
+ // Console replies normalize LF once and escape literal IAC; logical marks stay IDs.
+ RingStream text(64);text.mark(0);assert(text.peekTargetMark()==0);
+ text.print("a\nb\r\nc\r");text.commit();assert(text.read()==TelnetConsole::TEXT_MARKER);assert(text.count()==8);
+ for(char c:std::string("a\r\nb\r\nc\r"))assert(text.readRawByte()==(byte)c);
+ text.mark(0);text.write(255);text.commit();assert(text.read()==TelnetConsole::TEXT_MARKER);assert(text.count()==2);
+ assert(text.readRawByte()==255);assert(text.readRawByte()==255);
  // Real programming callback stash functions reject output after ID reuse.
  RingStream async(128);int16_t params[MAX_COMMAND_PARAMS]={};
  async.mark(0);assert(DCCEXParser::stashCallback(&async,params,&async));async.commit();
  assert(DCCEXParser::getAsyncReplyStream()==&async);async.print("valid");DCCEXParser::commitAsyncReplyStream();
- assert(async.read()==0);assert(async.count()==5);for(int n=0;n<5;n++)async.read();
+ assert(async.read()==TelnetConsole::TEXT_MARKER);assert(async.count()==5);for(int n=0;n<5;n++)async.read();
  async.mark(0);assert(DCCEXParser::stashCallback(&async,params,&async));async.commit();
  TelnetConsole::forget(0);
  assert(DCCEXParser::getAsyncReplyStream()==nullptr);DCCEXParser::commitAsyncReplyStream();
@@ -218,3 +257,90 @@ int main(){
     # Firmware owns its rings for process lifetime; focus on invalid accesses.
     env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0")
     subprocess.run([str(executable)], check=True, env=env)
+    if os.environ.get("DCCEX_TEST_MAC_TELNET"):
+        import pty
+        import select
+        import shutil
+        import time
+        telnet = shutil.which("telnet")
+        if not telnet:
+            raise RuntimeError("Real-client test requested but telnet is not installed")
+        (work / "bridge.cpp").write_text(r'''#include "TelnetConsole.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <iostream>
+#include <cassert>
+int main(){
+ int listener=socket(AF_INET,SOCK_STREAM,0);assert(listener>=0);
+ sockaddr_in address{};address.sin_family=AF_INET;address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+ assert(!bind(listener,(sockaddr*)&address,sizeof(address)));assert(!listen(listener,1));
+ socklen_t length=sizeof(address);getsockname(listener,(sockaddr*)&address,&length);
+ std::cout<<ntohs(address.sin_port)<<std::endl;
+ int client=accept(listener,nullptr,nullptr);assert(client>=0);fcntl(client,F_SETFL,O_NONBLOCK);
+ RingStream ring(4096);
+ for(int tick=0;tick<15000;tick++){
+  byte data[512];int count=recv(client,data,sizeof(data),0);if(count==0)break;
+  if(count>0)for(int n=0;n<count;n++){
+   assert(TelnetConsole::claim(0,data[n]));TelnetConsole::receive(0,data[n]);
+  }
+  if(ring.peek()<0)TelnetConsole::pump(&ring);
+  byte id;byte command[128];if(TelnetConsole::nextCommand(id,command)){
+   ring.mark(id);ring.print(!strcmp((char*)command,"<s>")?"<iDCC-EX TEST>\n":"error\n");ring.commit();
+  }
+  int target=ring.read();if(target>=0){
+   int bytes=ring.count();byte payload[1024];assert(bytes<(int)sizeof(payload));
+   for(int n=0;n<bytes;n++)payload[n]=ring.readRawByte();
+   assert(send(client,payload,bytes,0)==bytes);
+  }
+  usleep(1000);
+ }
+ close(client);close(listener);
+}
+''')
+        bridge = work / "bridge"
+        subprocess.run(["clang++", "-std=c++17", "-fsanitize=address,undefined",
+                        "-I", str(work), str(work / "TelnetConsole.cpp"),
+                        str(work / "RingStream.cpp"), str(work / "bridge.cpp"),
+                        "-o", str(bridge)], check=True)
+        server = subprocess.Popen([str(bridge)], stdout=subprocess.PIPE,
+                                  text=True, env=env)
+        master, slave = pty.openpty()
+        client = None
+        transcript = bytearray()
+        try:
+            port = server.stdout.readline().strip()
+            client = subprocess.Popen([telnet, "127.0.0.1", port], stdin=slave,
+                                      stdout=slave, stderr=slave,
+                                      env=dict(env, TERM="vt100"))
+            os.close(slave)
+            def wait_for(expected, seconds=5):
+                deadline = time.monotonic() + seconds
+                while time.monotonic() < deadline:
+                    if expected in transcript:
+                        return
+                    ready, _, _ = select.select([master], [], [], 0.2)
+                    if ready:
+                        transcript.extend(os.read(master, 4096))
+                raise RuntimeError(f"Missing {expected!r}: {bytes(transcript)!r}")
+            wait_for(b"Connected")
+            os.write(master, b"#console\r")
+            wait_for(b"dcc> ")
+            start = len(transcript)
+            os.write(master, b"<sx\x7f>\r")
+            wait_for(b"<iDCC-EX TEST>")
+            segment = bytes(transcript[start:])
+            if b"^M" in segment:
+                raise RuntimeError(f"Visible carriage-return artifact: {segment!r}")
+            if b"<s" not in segment or b"\x08 \x08" not in segment:
+                raise RuntimeError(f"Server echo/edit not observed: {segment!r}")
+            print("Real Mac telnet client: negotiation, server echo, editing and Enter passed.")
+        finally:
+            if client:
+                client.terminate()
+                client.wait(timeout=5)
+            os.close(master)
+            if server.poll() is None:
+                server.terminate()
+            server.wait(timeout=5)

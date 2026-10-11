@@ -77,7 +77,7 @@ void WifiInboundHandler::loop1() {
          bool websocket=clientPendingCIPSEND & Websockets::WEBSOCK_CLIENT_MARKER;
          byte realClient=clientPendingCIPSEND & ~Websockets::WEBSOCK_CLIENT_MARKER;
 #ifdef WIFI_TELNET
-         realClient &= ~TelnetConsole::CLIENT_MARKER;
+         realClient &= ~(TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER);
 #endif
          int16_t realSize=currentReplySize;
          if (websocket) realSize+=Websockets::getOutboundHeaderSize(currentReplySize);
@@ -154,7 +154,7 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
 #ifdef WIFI_TELNET
              // RingStream::read interprets 0xff as a flash pointer marker.
              // Telnet negotiation contains literal 0xff and must be read raw.
-             int cout = (clientPendingCIPSEND & TelnetConsole::CLIENT_MARKER)
+             int cout = (clientPendingCIPSEND & (TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER))
                ? outboundRing->readRawByte() : outboundRing->read();
 #else
              int cout=outboundRing->read();
@@ -287,7 +287,7 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
          // got "x C" before CLOSE or CONNECTED, or CONNECT FAILED
          int pendingClient = clientPendingCIPSEND;
 #ifdef WIFI_TELNET
-         if (pendingClient >= 0) pendingClient &= ~(TelnetConsole::CLIENT_MARKER | Websockets::WEBSOCK_CLIENT_MARKER);
+         if (pendingClient >= 0) pendingClient &= ~(TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER | Websockets::WEBSOCK_CLIENT_MARKER);
 #endif
          if (runningClientId==pendingClient) purgeCurrentCIPSEND();
          else CommandDistributor::forget(runningClientId);
@@ -352,13 +352,13 @@ void WifiInboundHandler::purgeCurrentCIPSEND() {
          // A CIPSEND was sent but errored... or the client closed just toss it away
          byte client = clientPendingCIPSEND & ~Websockets::WEBSOCK_CLIENT_MARKER;
 #ifdef WIFI_TELNET
-         client &= ~TelnetConsole::CLIENT_MARKER;
+         client &= ~(TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER);
 #endif
          CommandDistributor::forget(client);
          DIAG(F("Wifi: DROPPING CIPSEND=%d,%d"),clientPendingCIPSEND,currentReplySize);
          for (int i=0;i<currentReplySize;i++) {
 #ifdef WIFI_TELNET
-           if (clientPendingCIPSEND & TelnetConsole::CLIENT_MARKER) outboundRing->readRawByte();
+           if (clientPendingCIPSEND & (TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER)) outboundRing->readRawByte();
            else
 #endif
              outboundRing->read();

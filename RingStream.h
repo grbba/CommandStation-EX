@@ -67,6 +67,10 @@ class RingStream : public Print {
    byte * _buffer;
    char * _flashInsert;
    byte _ringClient = NO_CLIENT;
+#ifdef WIFI_TELNET
+   bool _lastCR = false;
+   size_t writeByte(uint8_t b);
+#endif
 };
 
 #endif

@@ -18,6 +18,16 @@ struct Session {
   Decoder decoder = TEXT;
   byte optionCommand = 0;
   bool afterCR = false;
+  bool announced = false;
+  bool echoEnabled = false;
+  bool offeringEcho = false;
+  bool peerSGA = false;
+  bool offeringPeerSGA = false;
+  byte control[128] = {};
+  byte controlLength = 0;
+  byte echo[128] = {};
+  byte echoLength = 0;
+  bool redraw = false;
   bool suppressGoAhead = false;
   bool offeringSGA = false;
   bool discard = false;
@@ -55,10 +65,63 @@ bool enqueue(byte client, const byte *data, unsigned length) {
   outputCount++;
   return true;
 }
+bool flushControl(byte client) {
+  Session &s = sessions[client];
+  if (!s.controlLength) return true;
+  if (!enqueue(client, s.control, s.controlLength)) return false;
+  s.controlLength = 0;
+  return true;
+}
+bool option(byte client, byte verb, byte code) {
+  Session &s = sessions[client];
+  if (s.controlLength + 3 > sizeof(s.control) && !flushControl(client)) return false;
+  s.control[s.controlLength++] = IAC;
+  s.control[s.controlLength++] = verb;
+  s.control[s.controlLength++] = code;
+  return true;
+}
+bool flushEcho(byte client) {
+  Session &s = sessions[client];
+  if (!flushControl(client)) return false;
+  if (s.redraw) {
+    byte data[LINE + 16];
+    const char *prefix = s.mode == CONSOLE ? "\r\033[Kdcc> " : "\r\033[K";
+    unsigned length = strlen(prefix);
+    memcpy(data, prefix, length);
+    memcpy(data + length, s.line, s.length);
+    if (!enqueue(client, data, length + s.length)) return false;
+    s.redraw = false;
+    s.echoLength = 0;
+  } else if (s.echoLength) {
+    if (!enqueue(client, s.echo, s.echoLength)) return false;
+    s.echoLength = 0;
+  }
+  return true;
+}
+void echo(byte client, const char *data, unsigned length) {
+  Session &s = sessions[client];
+  if (!s.echoEnabled || s.redraw) return;
+  if (s.echoLength + length > sizeof(s.echo) && !flushEcho(client)) {
+    s.echoLength = 0;
+    s.redraw = true;
+    return;
+  }
+  memcpy(s.echo + s.echoLength, data, length);
+  s.echoLength += length;
+}
 void message(byte client, const char *text) {
-  enqueue(client, (const byte *)text, strlen(text));
+  if (flushEcho(client)) enqueue(client, (const byte *)text, strlen(text));
 }
 void prompt(byte client) { message(client, "dcc> "); }
+void announce(byte client) {
+  Session &s = sessions[client];
+  if (s.announced) return;
+  s.announced = true;
+  s.offeringEcho = option(client, WILL, 1);
+  s.offeringSGA = option(client, WILL, 3);
+  s.offeringPeerSGA = option(client, DO, 3);
+  message(client, "DCC-EX: enter #console then Enter.\r\n");
+}
 
 class Diagnostic : public Print {
 public:
@@ -89,11 +152,6 @@ void lineReady(byte client) {
       } else {
         owner = client;
         s.mode = CONSOLE;
-        // Client supplies local echo; server supports suppress-go-ahead.
-        if (!s.suppressGoAhead && !s.offeringSGA) {
-          const byte negotiation[] = {IAC, WILL, 3};
-          if (enqueue(client, negotiation, sizeof(negotiation))) s.offeringSGA = true;
-        }
         message(client, "\r\nDCC-EX console. Raw <commands>; help; diag on/off.\r\n");
         prompt(client);
       }
@@ -139,8 +197,15 @@ bool TelnetConsole::handles(byte client) {
 bool TelnetConsole::claim(byte client, byte first) {
   if (client >= MAX_NUM_TCP_CLIENTS) return false;
   Session &s = sessions[client];
-  if (s.mode == UNDECIDED) s.mode = (first == '#' || first == IAC) ? CANDIDATE : APPLICATION;
+  if (s.mode == UNDECIDED) {
+    s.mode = (first == '#' || first == IAC) ? CANDIDATE : APPLICATION;
+    if (s.mode == CANDIDATE) announce(client);
+  }
   return handles(client);
+}
+bool TelnetConsole::isConsole(byte client) {
+  client &= CLIENT_MASK;
+  return client < MAX_NUM_TCP_CLIENTS && sessions[client].mode == CONSOLE;
 }
 void TelnetConsole::receive(byte client, byte value) {
   if (!handles(client)) return;
@@ -154,22 +219,33 @@ void TelnetConsole::receive(byte client, byte value) {
       s.decoder = value == 250 ? SUBNEGOTIATION : TEXT;
       return;
     case OPTION: {
-      byte response = 0;
-      if (s.optionCommand == DO && value == 3) {
-        if (s.offeringSGA) s.offeringSGA = false; // acknowledge our offer
-        else if (!s.suppressGoAhead) response = WILL;
+      if (value == 1 && s.optionCommand == DO) {
+        if (s.offeringEcho) s.offeringEcho = false;
+        else if (!s.echoEnabled) option(client, WILL, 1);
+        s.echoEnabled = true;
+      } else if (value == 1 && s.optionCommand == DONT) {
+        if (s.echoEnabled && !s.offeringEcho) option(client, WONT, 1);
+        s.offeringEcho = false;
+        s.echoEnabled = false;
+      } else if (value == 3 && s.optionCommand == DO) {
+        if (s.offeringSGA) s.offeringSGA = false;
+        else if (!s.suppressGoAhead) option(client, WILL, 3);
         s.suppressGoAhead = true;
-      } else if (s.optionCommand == DONT && value == 3) {
-        if (s.suppressGoAhead && !s.offeringSGA) response = WONT;
+      } else if (value == 3 && s.optionCommand == DONT) {
+        if (s.suppressGoAhead && !s.offeringSGA) option(client, WONT, 3);
         s.offeringSGA = false;
         s.suppressGoAhead = false;
-      } else if (s.optionCommand == DO) response = WONT;
-      else if (s.optionCommand == WILL) response = DONT;
-      // Duplicate enabled options and negative acknowledgements get no reply.
-      if (response) {
-        byte bytes[] = {IAC, response, value};
-        enqueue(client, bytes, sizeof(bytes));
-      }
+      } else if (value == 3 && s.optionCommand == WILL) {
+        if (s.offeringPeerSGA) s.offeringPeerSGA = false;
+        else if (!s.peerSGA) option(client, DO, 3);
+        s.peerSGA = true;
+      } else if (value == 3 && s.optionCommand == WONT) {
+        if (s.peerSGA && !s.offeringPeerSGA) option(client, DONT, 3);
+        s.offeringPeerSGA = false;
+        s.peerSGA = false;
+      } else if (s.optionCommand == DO) option(client, WONT, value);
+      else if (s.optionCommand == WILL) option(client, DONT, value);
+      // Negative acknowledgements and duplicate enabled options are silent.
       s.decoder = TEXT; return;
     }
     case SUBNEGOTIATION: if (value == IAC) s.decoder = SUBESCAPE; return;
@@ -181,15 +257,22 @@ void TelnetConsole::receive(byte client, byte value) {
     if (value == '\n' || value == 0) return;
   }
   if (value == '\r' || value == '\n') {
-    s.afterCR = value == '\r'; lineReady(client); return;
+    s.afterCR = value == '\r';
+    echo(client, "\r\n", 2);
+    lineReady(client); return;
   }
-  if (value == 8 || value == 127) { if (!s.discard && s.length) s.length--; return; }
+  if (value == 8 || value == 127) {
+    if (!s.discard && s.length) { s.length--; echo(client, "\b \b", 3); }
+    return;
+  }
   if (value < 32 || value > 126 || s.discard) return;
   if (s.length == LINE - 1) { s.discard = true; return; }
   s.line[s.length++] = value;
+  char character = value;
+  echo(client, &character, 1);
 }
 uint16_t TelnetConsole::generation(byte client) {
-  client &= 0x3f;
+  client &= CLIENT_MASK;
   return client < MAX_NUM_TCP_CLIENTS ? sessions[client].generation : 0;
 }
 void TelnetConsole::forget(byte client) {
@@ -213,6 +296,10 @@ bool TelnetConsole::nextCommand(byte &client, byte *command) {
   return false;
 }
 void TelnetConsole::pump(RingStream *ring) {
+  // Coalesce negotiation replies and keystroke echo before using CIPSEND.
+  // A client option flurry therefore does not consume one queue slot per option.
+  for (byte client = 0; client < MAX_NUM_TCP_CLIENTS; client++)
+    if (handles(client)) flushEcho(client);
   // Only inject when the shared output ring and CIPSEND are idle. The caller
   // immediately claims this frame, allowing close/error handling to purge it.
   while (outputCount) {

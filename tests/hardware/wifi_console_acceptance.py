@@ -32,12 +32,17 @@ def connect(host, port):
 def open_console(host, port):
     client = connect(host, port)
     try:
+        # Negotiate before sending application text, as mobile clients do.
+        client.sendall(bytes([255, 253, 1, 255, 253, 3, 255, 251, 3]))
+        entry = receive(client, b"enter #console")
+        if bytes([255, 251, 1]) not in entry:
+            raise RuntimeError(f"Server did not offer echo: {entry!r}")
         client.sendall(b"#console\r\n")
         greeting = receive(client, b"dcc> ")
         if b"DCC-EX console" not in greeting:
             raise RuntimeError(f"Unexpected greeting: {greeting!r}")
-        # Acknowledge suppress-go-ahead one byte at a time.
-        for value in (255, 253, 3):
+        # Repeat echo acknowledgement bytewise: it must not start a reply loop.
+        for value in (255, 253, 1):
             client.sendall(bytes([value]))
             time.sleep(0.05)
         return client
@@ -55,7 +60,9 @@ def main():
         console = stack.enter_context(open_console(args.host, args.port))
         console.sendall(b"<s>\r\n")
         status = receive(console, b"<iDCC-EX")
-        receive(console, seconds=0.3)
+        status += receive(console, seconds=0.3)
+        if b"<s>\r\n" not in status or b"\r\r\n" in status:
+            raise RuntimeError(f"Console echo/line ending failure: {status!r}")
         print("PASS: console status", status.decode("ascii", "backslashreplace").strip())
 
         throttle = stack.enter_context(connect(args.host, args.port))
