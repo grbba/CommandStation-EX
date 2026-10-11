@@ -1,0 +1,24 @@
+name: Olimex display checks
+on:
+  push:
+    branches: [grbba-wifi-telnet]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test bounded rendering with sanitizers
+        run: python3 tests/olimex_display_test.py
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PlatformIO
+        run: pip install platformio==6.1.19
+      - name: Use public example configuration
+        run: cp config.example.h config.h
+      - name: Build with and without the optional display
+        run: pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex -e Nucleo-F439ZI-DisplayDisabled

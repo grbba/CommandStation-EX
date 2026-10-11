@@ -105,7 +105,11 @@ void setup()
   DISPLAY_START (
     // This block is still executed for DIAGS if display not in use
     LCD(0,F("DCC-EX v" VERSION));
+#ifdef OLIMEX_LCD
+    LCD(1,F("Nucleo F439ZI"));
+#else
     LCD(1,F("Lic GPLv3"));
+#endif
   );
 
   // Responsibility 2: Start all the communications before the DCC engine

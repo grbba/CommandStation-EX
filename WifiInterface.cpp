@@ -24,6 +24,9 @@
 #ifndef ARDUINO_AVR_UNO_WIFI_REV2
 // This code is NOT compiled on a unoWifiRev2 processor which uses a different architecture 
 #include "WifiInterface.h"        /* config.h included there */
+#ifdef OLIMEX_LCD
+#include "DisplayInterface.h"
+#endif
 //#include <avr/pgmspace.h>
 #include "DIAG.h"
 #include "StringFormatter.h"
@@ -85,7 +88,7 @@ Stream * WifiInterface::wifiStream;
 #define SERIAL1 Serial1
 #endif
 
-bool WifiInterface::setup(long serial_link_speed, 
+bool WifiInterface::setup(long serial_link_speed,
                           const FSH *wifiESSID,
                           const FSH *wifiPassword,
                           const FSH *hostname,
@@ -93,6 +96,10 @@ bool WifiInterface::setup(long serial_link_speed,
                           const byte channel,
                           const bool forceAP) {
 
+#ifdef OLIMEX_LCD
+  LCD(2, F("WiFi connecting..."));
+  DisplayInterface::refresh();
+#endif
   wifiSerialState wifiUp = WIFI_NOAT;
 
 #if NUM_SERIAL == 0
@@ -134,6 +141,10 @@ bool WifiInterface::setup(long serial_link_speed,
   }
 #endif
 
+#ifdef OLIMEX_LCD
+  LCD(2, wifiUp == WIFI_CONNECTED ? F("WiFi connected") : F("WiFi unavailable"));
+  DisplayInterface::refresh();
+#endif
   if (wifiUp == WIFI_NOAT) // here and still not AT commands found
       return false;
 
