@@ -9,6 +9,7 @@ public:
   static constexpr byte CLIENT_MARKER = 0x40;
   static constexpr byte TEXT_MARKER = 0x20;
   static constexpr byte CLIENT_MASK = 0x1f;
+  static void connected(byte client);
   static bool claim(byte client, byte first);
   static bool handles(byte client);
   static bool isConsole(byte client);

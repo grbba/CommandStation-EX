@@ -5,6 +5,9 @@
 #include <stdio.h>
 
 namespace {
+#ifndef WIFI_TELNET_PROBE_MS
+#define WIFI_TELNET_PROBE_MS 1000
+#endif
 constexpr byte NONE = 255;
 constexpr unsigned LINE = 128;
 constexpr byte OUTPUTS = 8;
@@ -18,6 +21,9 @@ struct Session {
   Decoder decoder = TEXT;
   byte optionCommand = 0;
   bool afterCR = false;
+  bool connected = false;
+  bool offersStarted = false;
+  uint32_t connectedMs = 0;
   bool announced = false;
   bool echoEnabled = false;
   bool offeringEcho = false;
@@ -113,13 +119,19 @@ void message(byte client, const char *text) {
   if (flushEcho(client)) enqueue(client, (const byte *)text, strlen(text));
 }
 void prompt(byte client) { message(client, "dcc> "); }
-void announce(byte client) {
+void offerOptions(byte client) {
   Session &s = sessions[client];
-  if (s.announced) return;
-  s.announced = true;
+  if (s.offersStarted) return;
+  s.offersStarted = true;
   s.offeringEcho = option(client, WILL, 1);
   s.offeringSGA = option(client, WILL, 3);
   s.offeringPeerSGA = option(client, DO, 3);
+}
+void announce(byte client) {
+  Session &s = sessions[client];
+  if (s.announced || s.length) return;
+  s.announced = true;
+  offerOptions(client);
   message(client, "DCC-EX: enter #console then Enter.\r\n");
 }
 
@@ -190,6 +202,11 @@ void lineReady(byte client) {
 }
 }
 
+void TelnetConsole::connected(byte client) {
+  if (client >= MAX_NUM_TCP_CLIENTS) return;
+  sessions[client].connected = true;
+  sessions[client].connectedMs = millis();
+}
 bool TelnetConsole::handles(byte client) {
   return client < MAX_NUM_TCP_CLIENTS &&
     (sessions[client].mode == CANDIDATE || sessions[client].mode == CONSOLE);
@@ -199,7 +216,12 @@ bool TelnetConsole::claim(byte client, byte first) {
   Session &s = sessions[client];
   if (s.mode == UNDECIDED) {
     s.mode = (first == '#' || first == IAC) ? CANDIDATE : APPLICATION;
-    if (s.mode == CANDIDATE) announce(client);
+    if (s.mode == CANDIDATE) {
+      offerOptions(client);
+      // A literal #console is already an entry request, so do not instruct
+      // that caller to enter it again. Telnet negotiators get an entry hint.
+      if (first == IAC) announce(client);
+    }
   }
   return handles(client);
 }
@@ -298,8 +320,15 @@ bool TelnetConsole::nextCommand(byte &client, byte *command) {
 void TelnetConsole::pump(RingStream *ring) {
   // Coalesce negotiation replies and keystroke echo before using CIPSEND.
   // A client option flurry therefore does not consume one queue slot per option.
-  for (byte client = 0; client < MAX_NUM_TCP_CLIENTS; client++)
-    if (handles(client)) flushEcho(client);
+  for (byte client = 0; client < MAX_NUM_TCP_CLIENTS; client++) {
+    Session &s = sessions[client];
+    // A server-first terminal otherwise waits forever for our negotiation.
+    // Only control bytes are probed; classify on its reply before sending text.
+    if (WIFI_TELNET_PROBE_MS && s.connected && s.mode == UNDECIDED &&
+        !s.offersStarted && uint32_t(millis() - s.connectedMs) >= WIFI_TELNET_PROBE_MS)
+      offerOptions(client);
+    if (handles(client) || (s.mode == UNDECIDED && s.offersStarted)) flushEcho(client);
+  }
   // Only inject when the shared output ring and CIPSEND are idle. The caller
   // immediately claims this frame, allowing close/error handling to purge it.
   while (outputCount) {

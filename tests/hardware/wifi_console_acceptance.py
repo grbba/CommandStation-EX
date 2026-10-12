@@ -32,11 +32,12 @@ def connect(host, port):
 def open_console(host, port):
     client = connect(host, port)
     try:
-        # Negotiate before sending application text, as mobile clients do.
+        # Send nothing first: reproduce clients waiting for the server to start.
+        offer = receive(client, bytes([255, 251, 1]))
+        if b"enter #console" in offer:
+            raise RuntimeError("Server sent application text before protocol identification")
         client.sendall(bytes([255, 253, 1, 255, 253, 3, 255, 251, 3]))
-        entry = receive(client, b"enter #console")
-        if bytes([255, 251, 1]) not in entry:
-            raise RuntimeError(f"Server did not offer echo: {entry!r}")
+        receive(client, b"enter #console")
         client.sendall(b"#console\r\n")
         greeting = receive(client, b"dcc> ")
         if b"DCC-EX console" not in greeting:

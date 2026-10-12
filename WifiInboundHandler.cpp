@@ -295,10 +295,25 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
          outboundRing->discardClient(runningClientId,
            clientPendingCIPSEND < 0 ? 0 : currentReplySize);
 #endif
-        }
-        loopState=SKIPTOEND;   
+         clientEvent[0] = 'C';
+         clientEventLength = 1;
+         loopState = GOT_CLIENT_EVENT;
+        } else loopState = SKIPTOEND;
         break;
-         
+
+      case GOT_CLIENT_EVENT:
+        if (ch == '\n') {
+          clientEvent[clientEventLength] = 0;
+#ifdef WIFI_TELNET
+          if (!strcmp(clientEvent, "CONNECT") || !strcmp(clientEvent, "CONNECTED"))
+            TelnetConsole::connected(runningClientId);
+#endif
+          loopState = ANYTHING;
+        } else if (ch != '\r' && clientEventLength < sizeof(clientEvent) - 1) {
+          clientEvent[clientEventLength++] = ch;
+        }
+        break;
+
       case SKIPTOEND: // skipping for /n
         if (ch=='\n') loopState=ANYTHING;
         break;

@@ -11,7 +11,7 @@ pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Telnet
 pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Telnet -t upload
 ```
 
-In an iPad Telnet app, set host to the IP shown on the LCD and port to **2560**. Use the app's normal automatic/default echo setting and Enter/newline to submit a line. The server offers **server-side echo** and suppress-go-ahead as soon as a client sends Telnet negotiation bytes or starts `#console`. A short entry prompt is sent before activation so clients can finish negotiation before accepting keyboard input. If you previously forced local echo on, turn it off to avoid duplicate characters. Clients that refuse server echo can still use local echo. Desktop Telnet works the same way. The port remains a raw multi-protocol listener: there is no automatic banner for ordinary throttle clients.
+In an iPad Telnet app, set host to the IP shown on the LCD and port to **2560**. Use the app's normal automatic/default echo setting and Enter/newline to submit a line. The server offers **server-side echo** and suppress-go-ahead as soon as a client sends Telnet negotiation bytes or starts `#console`. After an ESP CONNECT event, a connection that sends nothing for one second receives a Telnet control-only probe. A short entry prompt follows its Telnet response, so server-first clients can finish negotiation before accepting keyboard input. A direct `#console` entry goes straight to the console banner without the redundant entry hint. If you previously forced local echo on, turn it off to avoid duplicate characters. Clients that refuse server echo can still use local echo. Desktop Telnet works the same way. The port remains a raw multi-protocol listener: there is no automatic banner for ordinary throttle clients.
 
 After connecting, type this as the first application line:
 
@@ -38,6 +38,7 @@ Raw `<commands>` execute through CommandDistributor/DCCEXParser, preserving norm
 
 ## Queues, routing, and limits
 
+- A silent connection has not identified its protocol. The idle probe can reach a normal client that delays its first application message beyond the grace period; `WIFI_TELNET_PROBE_MS` sets that delay (default 1000 ms, 0 disables probing). Already identified throttle/DCC clients are never probed. No console text is sent to an unidentified client.
 - Console input is assembled independently per client, including Telnet negotiation split across packets. Option replies and keystroke echo are coalesced in bounded per-session buffers so a negotiation burst does not consume one output slot per option. Unsupported options are refused; subnegotiation is ignored without accumulating data.
 - Four complete commands and eight output messages are buffered with fixed bounds. Command admission reports a full queue. Diagnostic bursts are dropped before consuming the reserved control-message capacity, with a subsequent loss count.
 - Diagnostic output starts on a fresh line and restores the prompt/partially typed input. It is delivered only to the subscribed console; no console greeting or diagnostics are sent to ordinary throttle sessions.
@@ -89,3 +90,7 @@ DCCEX_TEST_MAC_TELNET=1 python3 tests/telnet_console_test.py
 ```
 
 The echo/SGA behavior follows [RFC 857](https://www.rfc-editor.org/rfc/rfc857.html) and [RFC 858](https://www.rfc-editor.org/rfc/rfc858.html).
+
+## Server-first startup correction (12 October 2026)
+
+The user's Mac transcript showed the entry hint only after typing `#console`; iSH's native client connected but never progressed. That revealed the passive-startup limitation. ESP CONNECT/CONNECTED events now arm a bounded one-second idle probe; CLOSED/CONNECT FAIL do not. The probe sends options only, waits for Telnet identification before sending text, and does not take console ownership. Tests cover idle startup, rejected/closed connections, immediate throttle identification, direct entry without a redundant hint, and a real Mac client that receives the entry prompt before any keys are sent. Hardware/iSH/Mocha retests remain pending.

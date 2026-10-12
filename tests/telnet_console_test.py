@@ -110,9 +110,24 @@ void enter(byte id){packet(id,"#con");packet(id,"sole\r");packet(id,"\n");}
 void diagnostic(const char* text){Print* sink=TelnetConsole::beginDiagnostic();if(sink){sink->print(text);TelnetConsole::endDiagnostic();}}
 int main(){
  WifiInboundHandler::setup(&uart);
+ // CONNECT notifications arm the idle timer; CLOSED/CONNECT FAIL must not.
+ uart.feed("5,CONNECT\r\n");cycles(50);
+ size_t idleStart=uart.output.size();cycles(80);
+ std::string idle=uart.output.substr(idleStart);
+ assert(idle.find(std::string("\xff\xfb\x01",3))!=std::string::npos);
+ assert(idle.find("enter #console")==std::string::npos); // no text until Telnet reply
+ packet(5,std::string("\xff\xfd\x01\xff\xfd\x03\xff\xfb\x03",9));
+ assert(uart.output.find("enter #console")!=std::string::npos);close(5);
+ idleStart=uart.output.size();uart.feed("5,CONNECT FAIL\r\n");cycles(200);
+ assert(uart.output.size()==idleStart);
+ // Fast normal clients never receive an idle probe or console greeting.
+ size_t normalStart=uart.output.size();
+ uart.feed("1,CONNECT\r\n");cycles(5);
  // A normal throttle passes through unchanged and receives no console greeting.
  packet(1,"NThrottle\n");
  assert(CommandDistributor::calls.back()==std::make_pair((byte)1,std::string("NThrottle\n")));
+ assert(uart.output.substr(normalStart).find((char)255)==std::string::npos);
+ assert(uart.output.substr(normalStart).find("enter #console")==std::string::npos);
  assert(uart.output.find("DCC-EX console")==std::string::npos);
  assert(uart.output.find("reply\n")!=std::string::npos);
  assert(uart.output.find("reply\r\n")==std::string::npos);
@@ -131,6 +146,16 @@ int main(){
  for(byte option: {byte(24),byte(31),byte(32),byte(34),byte(36),byte(39),byte(42),byte(44),byte(45),byte(46)})
    assert(initial.find(std::string("\xff\xfc",2)+std::string(1,(char)option))!=std::string::npos);
  close(4);
+ // A delayed normal client is still classified as application after the probe.
+ uart.feed("7,CONNECTED\r\n");cycles(150);
+ size_t lateStart=uart.output.size();packet(7,"NLateThrottle\n");cycles(150);
+ assert(CommandDistributor::calls.back()==std::make_pair((byte)7,std::string("NLateThrottle\n")));
+ assert(uart.output.substr(lateStart).find("enter #console")==std::string::npos);
+ assert(uart.output.substr(lateStart).find((char)255)==std::string::npos);close(7);
+ // A direct entry request must not be followed by a redundant entry hint.
+ size_t directStart=uart.output.size();enter(6);
+ assert(uart.output.substr(directStart).find("enter #console")==std::string::npos);
+ close(6);
  // Byte-wise option negotiation must survive the real ring's 0xff marker handling.
  packet(0,std::string(1,(char)255));packet(0,std::string(1,(char)253));packet(0,std::string(1,(char)42));
  assert(uart.output.find(std::string("\xff\xfc\x2a",3))!=std::string::npos);
@@ -279,9 +304,9 @@ int main(){
  socklen_t length=sizeof(address);getsockname(listener,(sockaddr*)&address,&length);
  std::cout<<ntohs(address.sin_port)<<std::endl;
  int client=accept(listener,nullptr,nullptr);assert(client>=0);fcntl(client,F_SETFL,O_NONBLOCK);
- RingStream ring(4096);
+ RingStream ring(4096);TelnetConsole::connected(0);
  for(int tick=0;tick<15000;tick++){
-  byte data[512];int count=recv(client,data,sizeof(data),0);if(count==0)break;
+  now++;byte data[512];int count=recv(client,data,sizeof(data),0);if(count==0)break;
   if(count>0)for(int n=0;n<count;n++){
    assert(TelnetConsole::claim(0,data[n]));TelnetConsole::receive(0,data[n]);
   }
@@ -325,6 +350,8 @@ int main(){
                         transcript.extend(os.read(master, 4096))
                 raise RuntimeError(f"Missing {expected!r}: {bytes(transcript)!r}")
             wait_for(b"Connected")
+            # Send no keys: server-first clients must finish startup themselves.
+            wait_for(b"enter #console")
             os.write(master, b"#console\r")
             wait_for(b"dcc> ")
             start = len(transcript)

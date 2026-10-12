@@ -60,6 +60,7 @@ class WifiInboundHandler {
           IPD_PRESCAN,    // prescanning data for websocket keys
           IPD_POSTSCAN,    // copyimg data for websocket keys
           GOT_CLIENT_ID,  // clientid prefix to CONNECTED / CLOSED
+          GOT_CLIENT_EVENT, // collecting CONNECT / CLOSED notification
           GOT_CLIENT_ID2  // clientid prefix to CONNECTED / CLOSED
   };
 
@@ -81,6 +82,8 @@ class WifiInboundHandler {
    RingStream * outboundRing;
      
   LOOP_STATE loopState=ANYTHING;
+  char clientEvent[20] = {};
+  byte clientEventLength = 0;
   bool preferConsole = true;
   byte prescanPoint = 0;
   int runningClientId;   // latest client inbound processing data or CLOSE
