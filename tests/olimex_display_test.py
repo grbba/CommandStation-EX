@@ -12,6 +12,8 @@ with tempfile.TemporaryDirectory(prefix="olimex-display-test-") as directory:
     (work / "defines.h").write_text('''#pragma once
 #define OLIMEX_LCD
 #define ARDUINO_NUCLEO_F439ZI
+#define WIFI_TELNET
+#define MAX_NUM_TCP_CLIENTS 5
 #define PC10 42
 #define PC11 43
 #define PC12 44
@@ -20,7 +22,26 @@ with tempfile.TemporaryDirectory(prefix="olimex-display-test-") as directory:
     (work / "Arduino.h").write_text('''#pragma once
 #include <cstdint>
 #include <cstddef>
+using byte=uint8_t;
+inline uint32_t now=0;
+inline uint32_t millis(){return now;}
 class Print { public: virtual ~Print() {} virtual size_t write(uint8_t)=0; };
+''')
+    (work / "TelnetConsole.h").write_text('''#pragma once
+#include "Arduino.h"
+class TelnetConsole { public:
+  enum ConnectionState : byte { DISCONNECTED, WAITING, TELNET, APP_CLIENT };
+  static inline ConnectionState states[5]={};
+  static ConnectionState connectionState(byte c){return states[c];}
+};
+''')
+    (work / "CommandDistributor.h").write_text('''#pragma once
+#include "Arduino.h"
+class CommandDistributor { public:
+  enum clientType : byte {NONE_TYPE,COMMAND_TYPE,WITHROTTLE_TYPE,WEBSOCK_CONNECTING_TYPE,WEBSOCKET_TYPE};
+  static inline clientType types[5]={};
+  static clientType getClientType(byte c){return types[c];}
+};
 ''')
     (work / "Adafruit_ILI9341.h").write_text('''#pragma once
 #include "Arduino.h"
@@ -52,6 +73,8 @@ public:
 };
 ''')
     (work / "test.cpp").write_text('''#include "OlimexDisplay.h"
+#include "TelnetConsole.h"
+#include "CommandDistributor.h"
 #include <cassert>
 #include <cstring>
 DisplayInterface* DisplayInterface::_displayHandler=nullptr;
@@ -84,6 +107,31 @@ int main() {
   display._clear(); display._refresh();
   for(auto& row:Adafruit_ILI9341::screen)
     for(char c:row) assert(c==' ');
+  TelnetConsole::states[0]=TelnetConsole::APP_CLIENT;
+  CommandDistributor::types[0]=CommandDistributor::WITHROTTLE_TYPE;
+  TelnetConsole::states[1]=TelnetConsole::TELNET;
+  TelnetConsole::states[2]=TelnetConsole::APP_CLIENT;
+  CommandDistributor::types[2]=CommandDistributor::WEBSOCKET_TYPE;
+  TelnetConsole::states[3]=TelnetConsole::WAITING;
+  TelnetConsole::states[4]=TelnetConsole::APP_CLIENT;
+  CommandDistributor::types[4]=CommandDistributor::WEBSOCK_CONNECTING_TYPE;
+  display._setRow(4); display._write('I');
+  now=250; before=Adafruit_ILI9341::writes;
+  display._displayLoop();
+  assert(Adafruit_ILI9341::writes<=before+1);
+  display._write('P'); // status must not change the active LCD cursor
+  display._refresh();
+  assert(memcmp(Adafruit_ILI9341::screen[4],"IP",2)==0);
+  const char* summary="WT:1 Tel:1 DCC:1 ?:2";
+  assert(memcmp(Adafruit_ILI9341::screen[7],summary,strlen(summary))==0);
+  for(auto& state:TelnetConsole::states) state=TelnetConsole::DISCONNECTED;
+  now=500; display._displayLoop(); display._refresh();
+  summary="WT:0 Tel:0 DCC:0 ?:0";
+  assert(memcmp(Adafruit_ILI9341::screen[7],summary,strlen(summary))==0);
+  for(unsigned n=strlen(summary);n<26;n++) assert(Adafruit_ILI9341::screen[7][n]==' ');
+  before=Adafruit_ILI9341::writes;
+  now=750; display._displayLoop(); display._refresh();
+  assert(Adafruit_ILI9341::writes==before);
 }
 ''')
     executable = work / "display-test"

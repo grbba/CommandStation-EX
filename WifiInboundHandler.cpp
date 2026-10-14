@@ -27,6 +27,7 @@
 #include "CommandDistributor.h"
 #include "DIAG.h"
 #include "Websockets.h"
+#include "TelnetConsole.h"
 
 WifiInboundHandler * WifiInboundHandler::singleton;
 
@@ -56,6 +57,10 @@ void WifiInboundHandler::loop1() {
    if (loop2()!=INBOUND_IDLE) return;
 
    WiThrottle::loop(outboundRing);
+#ifdef WIFI_TELNET
+   if (clientPendingCIPSEND < 0 && outboundRing->peek() < 0)
+     TelnetConsole::pump(outboundRing);
+#endif
    
     // if nothing is already CIPSEND pending, we can CIPSEND one reply
     if (clientPendingCIPSEND<0) {
@@ -71,8 +76,14 @@ void WifiInboundHandler::loop1() {
          // add allowances for websockets
          bool websocket=clientPendingCIPSEND & Websockets::WEBSOCK_CLIENT_MARKER;
          byte realClient=clientPendingCIPSEND & ~Websockets::WEBSOCK_CLIENT_MARKER;
+#ifdef WIFI_TELNET
+         realClient &= ~(TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER);
+#endif
          int16_t realSize=currentReplySize;
          if (websocket) realSize+=Websockets::getOutboundHeaderSize(currentReplySize);
+#ifdef WIFI_TELNET
+         TelnetConsole::MuteDiagnostics mute;
+#endif
          if (Diag::WIFI) DIAG( F("WiFi: [[CIPSEND=%d,%d]]"), realClient, realSize);
          StringFormatter::send(wifiStream, F("AT+CIPSEND=%d,%d\r\n"),  realClient,realSize);
          pendingCipsend=false;
@@ -80,6 +91,16 @@ void WifiInboundHandler::loop1() {
       }
     
     
+#ifdef WIFI_TELNET
+    byte consoleClient;
+    byte consoleCommand[128];
+    if ((preferConsole || inboundRing->peek() < 0) &&
+        TelnetConsole::nextCommand(consoleClient, consoleCommand)) {
+      preferConsole = false;
+      CommandDistributor::parse(consoleClient, consoleCommand, outboundRing);
+      return;
+    }
+#endif
     // if something waiting to execute, we can call it 
       int clientId=inboundRing->read();
       if (clientId>=0) {
@@ -93,6 +114,7 @@ void WifiInboundHandler::loop1() {
          if (Diag::WIFI) DIAG(F("%e"),cmd); 
          
          CommandDistributor::parse(clientId,cmd,outboundRing);
+         preferConsole = true;
          return;
       }
    }
@@ -102,8 +124,9 @@ void WifiInboundHandler::loop1() {
 // This is a Finite State Automation (FSA) handling the inbound bytes from an ES AT command processor    
 
 WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
-  const char WebSocketKeyName[]="Sec-WebSocket-Key: ";
-  static byte prescanPoint=0;
+#ifdef WIFI_TELNET
+  TelnetConsole::MuteDiagnostics mute;
+#endif
 
   while (wifiStream->available()) {
     int ch = wifiStream->read();
@@ -122,12 +145,20 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
           break; 
         }
         
-        if (ch=='>') { 
+        if (ch=='>') {
+           if (clientPendingCIPSEND < 0) { loopState = SKIPTOEND; break; }
            bool websocket=clientPendingCIPSEND & Websockets::WEBSOCK_CLIENT_MARKER; 
            if (Diag::WIFI) DIAG(F("[XMIT %d ws=%b]"),currentReplySize,websocket);
            if (websocket) Websockets::writeOutboundHeader(wifiStream,currentReplySize); 
            for (int i=0;i<currentReplySize;i++) {
+#ifdef WIFI_TELNET
+             // RingStream::read interprets 0xff as a flash pointer marker.
+             // Telnet negotiation contains literal 0xff and must be read raw.
+             int cout = (clientPendingCIPSEND & (TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER))
+               ? outboundRing->readRawByte() : outboundRing->read();
+#else
              int cout=outboundRing->read();
+#endif
              if (websocket && (cout=='\n')) cout='\r';
              wifiStream->write(cout);
              if (Diag::WIFI) StringFormatter::printEscape(cout); // DIAG in disguise
@@ -190,7 +221,7 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
         break;
         
       case IPD4_CLIENT:  // reading connection id
-        if (ch >= '0' || ch <='9'){
+        if (ch >= '0' && ch <='9'){
            runningClientId=ch-'0';
            loopState=IPD5;
         }
@@ -210,67 +241,41 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
           }
           if (Diag::WIFI) DIAG(F("Wifi inbound data(%d:%d):"),runningClientId,dataLength); 
           
-          // we normally dont read >100 bytes 
-          // so assume its an HTTP GET or similar
-         
-          if (dataLength<100 && inboundRing->freeSpace()<=(dataLength+1)) {
-            // This input would overflow the inbound ring, ignore it  
-            loopState=IPD_IGNORE_DATA;
-            if (Diag::WIFI) DIAG(F("Wifi OVERFLOW IGNORING:"));    
-            break;
-          }
-          inboundRing->mark(runningClientId);
-          prescanPoint=0;
-          loopState=(dataLength>100)? IPD_PRESCAN: IPD_DATA;
+#ifdef WIFI_TELNET
+          loopState = TelnetConsole::handles(runningClientId) ? IPD_TELNET : IPD_ROUTE;
+#else
+          beginPacketData();
+#endif
           break; 
         }
         dataLength = dataLength * 10 + (ch - '0');
         break;
         
-      case IPD_DATA: // reading data
-        inboundRing->write(ch);    
-        dataLength--;
-        if (dataLength == 0) {
-          inboundRing->commit();    
-          loopState = ANYTHING;
+      case IPD_ROUTE:
+#ifdef WIFI_TELNET
+        if (TelnetConsole::claim(runningClientId, ch)) {
+          loopState = IPD_TELNET;
+          TelnetConsole::receive(runningClientId, ch);
+          if (--dataLength == 0) loopState = ANYTHING;
+          break;
         }
+#endif
+        beginPacketData();
+        consumePacketData(ch);
         break;
 
-      case IPD_PRESCAN: // prescan reading data
-        dataLength--;
-        if (dataLength == 0) {
-          // Nothing found, this input is lost 
-          DIAG(F("Wifi prescan for websock not found"));
-          inboundRing->commit();    
-          loopState = ANYTHING;
-        }
-        if (ch!=WebSocketKeyName[prescanPoint]) {
-            prescanPoint=0;
-            break;
-        }
-        // matched the next char of the key
-        prescanPoint++;
-        if (WebSocketKeyName[prescanPoint]==0) {
-            if (Diag::WEBSOCKET) DIAG(F("Wifi prescan found"));
-           // prescan has detected full key
-           inboundRing->print(WebSocketKeyName);
-           loopState=IPD_POSTSCAN; // continmue as normal
-        }
+      case IPD_TELNET:
+#ifdef WIFI_TELNET
+        TelnetConsole::receive(runningClientId, ch);
+#endif
+        if (--dataLength == 0) loopState = ANYTHING;
         break;
 
-      case IPD_POSTSCAN: // reading data
-        inboundRing->write(ch);    
-        dataLength--;
-        if (ch=='\n') {
-          inboundRing->commit();    
-          loopState = IPD_IGNORE_DATA;
-        }
-        break;
-  
-
-      case IPD_IGNORE_DATA: // ignoring data that would not fit in inbound ring
-        dataLength--;
-        if (dataLength == 0) loopState = ANYTHING;
+      case IPD_DATA:
+      case IPD_PRESCAN:
+      case IPD_POSTSCAN:
+      case IPD_IGNORE_DATA:
+        consumePacketData(ch);
         break;
 
       case GOT_CLIENT_ID:  // got x before CLOSE or CONNECTED
@@ -280,12 +285,35 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
       case GOT_CLIENT_ID2:  // got "x,"  
         if (ch=='C') {
          // got "x C" before CLOSE or CONNECTED, or CONNECT FAILED
-         if (runningClientId==clientPendingCIPSEND) purgeCurrentCIPSEND();
+         int pendingClient = clientPendingCIPSEND;
+#ifdef WIFI_TELNET
+         if (pendingClient >= 0) pendingClient &= ~(TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER | Websockets::WEBSOCK_CLIENT_MARKER);
+#endif
+         if (runningClientId==pendingClient) purgeCurrentCIPSEND();
          else CommandDistributor::forget(runningClientId);
-        }
-        loopState=SKIPTOEND;   
+#ifdef WIFI_TELNET
+         outboundRing->discardClient(runningClientId,
+           clientPendingCIPSEND < 0 ? 0 : currentReplySize);
+#endif
+         clientEvent[0] = 'C';
+         clientEventLength = 1;
+         loopState = GOT_CLIENT_EVENT;
+        } else loopState = SKIPTOEND;
         break;
-         
+
+      case GOT_CLIENT_EVENT:
+        if (ch == '\n') {
+          clientEvent[clientEventLength] = 0;
+#ifdef WIFI_TELNET
+          if (!strcmp(clientEvent, "CONNECT") || !strcmp(clientEvent, "CONNECTED"))
+            TelnetConsole::connected(runningClientId);
+#endif
+          loopState = ANYTHING;
+        } else if (ch != '\r' && clientEventLength < sizeof(clientEvent) - 1) {
+          clientEvent[clientEventLength++] = ch;
+        }
+        break;
+
       case SKIPTOEND: // skipping for /n
         if (ch=='\n') loopState=ANYTHING;
         break;
@@ -294,13 +322,67 @@ WifiInboundHandler::INBOUND_STATE WifiInboundHandler::loop2() {
   return (loopState==ANYTHING) ? INBOUND_IDLE: INBOUND_BUSY;
 }
 
+void WifiInboundHandler::beginPacketData() {
+  if (runningClientId < 0 || runningClientId >= MAX_NUM_TCP_CLIENTS ||
+      (dataLength < 100 && inboundRing->freeSpace() <= dataLength + 1)) {
+    loopState = IPD_IGNORE_DATA;
+    return;
+  }
+  inboundRing->mark(runningClientId);
+  prescanPoint = 0;
+  loopState = dataLength > 100 ? IPD_PRESCAN : IPD_DATA;
+}
+
+void WifiInboundHandler::consumePacketData(int ch) {
+  const char key[] = "Sec-WebSocket-Key: ";
+  dataLength--;
+  switch (loopState) {
+    case IPD_DATA:
+      inboundRing->write(ch);
+      if (!dataLength) { inboundRing->commit(); loopState = ANYTHING; }
+      break;
+    case IPD_PRESCAN:
+      if (ch == key[prescanPoint]) {
+        if (!key[++prescanPoint]) {
+          inboundRing->print(key);
+          loopState = IPD_POSTSCAN;
+        }
+      } else prescanPoint = 0;
+      if (!dataLength) { inboundRing->commit(); loopState = ANYTHING; }
+      break;
+    case IPD_POSTSCAN:
+      inboundRing->write(ch);
+      if (ch == '\n' || !dataLength) {
+        inboundRing->commit();
+        loopState = dataLength ? IPD_IGNORE_DATA : ANYTHING;
+      }
+      break;
+    default:
+      if (!dataLength) loopState = ANYTHING;
+      break;
+  }
+}
+
 void WifiInboundHandler::purgeCurrentCIPSEND() {
          // A CIPSEND was sent but errored... or the client closed just toss it away
-         CommandDistributor::forget(clientPendingCIPSEND); 
+         byte client = clientPendingCIPSEND & ~Websockets::WEBSOCK_CLIENT_MARKER;
+#ifdef WIFI_TELNET
+         client &= ~(TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER);
+#endif
+         CommandDistributor::forget(client);
          DIAG(F("Wifi: DROPPING CIPSEND=%d,%d"),clientPendingCIPSEND,currentReplySize);
-         for (int i=0;i<currentReplySize;i++) outboundRing->read();
+         for (int i=0;i<currentReplySize;i++) {
+#ifdef WIFI_TELNET
+           if (clientPendingCIPSEND & (TelnetConsole::CLIENT_MARKER | TelnetConsole::TEXT_MARKER)) outboundRing->readRawByte();
+           else
+#endif
+             outboundRing->read();
+         }
          pendingCipsend=false;  
          clientPendingCIPSEND=-1;
+#ifdef WIFI_TELNET
+         outboundRing->discardClient(client, 0);
+#endif
 }
 
 #endif

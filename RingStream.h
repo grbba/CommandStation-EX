@@ -46,6 +46,10 @@ class RingStream : public Print {
     bool commit();
     uint8_t peekTargetMark();
     void flush();
+#ifdef WIFI_TELNET
+    // Preserve an in-flight payload prefix, remove committed frames for a closed client.
+    void discardClient(byte client, int pendingPayload);
+#endif
     void info();
     byte readRawByte();
     inline int peek() {
@@ -63,6 +67,10 @@ class RingStream : public Print {
    byte * _buffer;
    char * _flashInsert;
    byte _ringClient = NO_CLIENT;
+#ifdef WIFI_TELNET
+   bool _lastCR = false;
+   size_t writeByte(uint8_t b);
+#endif
 };
 
 #endif

@@ -23,6 +23,7 @@
 
 #include <Arduino.h>
 #include "CommandDistributor.h"
+#include "TelnetConsole.h"
 #include "SerialManager.h"
 #include "WiThrottle.h"
 #include "DIAG.h"
@@ -127,6 +128,10 @@ void  CommandDistributor::parse(byte clientId,byte * buffer, RingStream * stream
 }
 
 void CommandDistributor::forget(byte clientId) {
+  if (clientId >= sizeof(clients)) return;
+#ifdef WIFI_TELNET
+  TelnetConsole::forget(clientId);
+#endif
   if (clients[clientId]==WITHROTTLE_TYPE) WiThrottle::forget(clientId);
   clients[clientId]=NONE_TYPE;
   if (virtualLCDClient==clientId) virtualLCDClient=RingStream::NO_CLIENT;

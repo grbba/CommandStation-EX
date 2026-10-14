@@ -46,6 +46,11 @@ private:
     static clientType clients[MAX_NUM_TCP_CLIENTS];
   #endif
 public :
+  #ifdef CD_HANDLE_RING
+  static clientType getClientType(byte clientId) {
+    return clientId < MAX_NUM_TCP_CLIENTS ? clients[clientId] : NONE_TYPE;
+  }
+  #endif
   static void parse(byte clientId,byte* buffer, RingStream * ring);
   static void broadcastLoco(LocoSlot * slot);
   static void broadcastForgetLoco(int16_t loco);

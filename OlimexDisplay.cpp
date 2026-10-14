@@ -3,6 +3,11 @@
 
 #ifdef OLIMEX_LCD
 #include <string.h>
+#ifdef WIFI_TELNET
+#include <stdio.h>
+#include "TelnetConsole.h"
+#include "CommandDistributor.h"
+#endif
 
 OlimexDisplay::OlimexDisplay()
   : _tft(PD2, PC11, PC12, PC10, -1, -1) {
@@ -56,9 +61,41 @@ bool OlimexDisplay::drawNextCharacter() {
 }
 
 void OlimexDisplay::_displayLoop() {
+#ifdef WIFI_TELNET
+  if (_started && uint32_t(millis() - _connectionUpdateMs) >= 250) {
+    _connectionUpdateMs = millis();
+    updateConnections();
+  }
+#endif
   // One changed glyph per main-loop call; unchanged text causes no SPI traffic.
   drawNextCharacter();
 }
+
+#ifdef WIFI_TELNET
+void OlimexDisplay::updateConnections() {
+  unsigned throttle = 0, telnet = 0, dcc = 0, waiting = 0;
+  for (byte client = 0; client < MAX_NUM_TCP_CLIENTS; client++) {
+    switch (TelnetConsole::connectionState(client)) {
+      case TelnetConsole::TELNET: telnet++; break;
+      case TelnetConsole::WAITING: waiting++; break;
+      case TelnetConsole::APP_CLIENT:
+        switch (CommandDistributor::getClientType(client)) {
+          case CommandDistributor::WITHROTTLE_TYPE: throttle++; break;
+          case CommandDistributor::COMMAND_TYPE:
+          case CommandDistributor::WEBSOCKET_TYPE: dcc++; break;
+          default: waiting++; break;
+        }
+        break;
+      default: break;
+    }
+  }
+  char line[COLS + 1];
+  snprintf(line, sizeof(line), "WT:%u Tel:%u DCC:%u ?:%u", throttle, telnet, dcc, waiting);
+  // Update our own row without disturbing the current LCD writer/cursor.
+  memset(_text[7], ' ', COLS);
+  memcpy(_text[7], line, strlen(line));
+}
+#endif
 
 void OlimexDisplay::_refresh() {
   // Used only for boot status before the DCC engine starts.

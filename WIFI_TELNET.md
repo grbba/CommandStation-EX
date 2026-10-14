@@ -1,0 +1,108 @@
+# WiFi console on port 2560
+
+Optional F439ZI firmware adds a Telnet-compatible console on the same ESP-01 WiFi listener as ordinary DCC/WiThrottle clients. It retains the verified Olimex startup display. One console may be active; other sockets remain available to normal clients within the installed ESP AT firmware's connection limit.
+
+## LCD connection counts
+
+The Telnet build uses the bottom LCD row for a live summary, for example:
+
+```text
+WT:1 Tel:1 DCC:0 ?:0
+```
+
+`WT` counts WiThrottle TCP clients, `Tel` counts identified Telnet clients (including terminals that have not entered `#console`), and `DCC` counts raw DCC protocol and established WebSocket clients. `?` counts connected clients that have not identified their protocol or finished the WebSocket handshake. Counts refer to network sessions, not locomotives or individual throttle slots. A Telnet connection is counted even if another terminal owns the single console.
+
+The row updates within roughly a quarter second of a processed connection/classification/disconnection event, with characters drawn incrementally by the display loop. An abruptly lost client stays counted until the ESP reports it disconnected or the existing transport error handling removes it. The IP/port rows and clock row remain available. This summary is enabled only with both the Olimex display and WiFi Telnet features; display-only firmware is unchanged.
+
+## Build, upload, and connect
+
+Use the existing private config.h and the isolated implementation worktree. Build or upload with:
+
+```sh
+pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Telnet
+pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Telnet -t upload
+```
+
+In an iPad Telnet app, set host to the IP shown on the LCD and port to **2560**. Use the app's normal automatic/default echo setting and Enter/newline to submit a line. The server offers **server-side echo** and suppress-go-ahead as soon as a client sends Telnet negotiation bytes or starts `#console`. After an ESP CONNECT event, a connection that sends nothing for one second receives a Telnet control-only probe. A short entry prompt follows its Telnet response, so server-first clients can finish negotiation before accepting keyboard input. A direct `#console` entry goes straight to the console banner without the redundant entry hint. If you previously forced local echo on, turn it off to avoid duplicate characters. Clients that refuse server echo can still use local echo. Desktop Telnet works the same way. The port remains a raw multi-protocol listener: there is no automatic banner for ordinary throttle clients.
+
+After connecting, type this as the first application line:
+
+```text
+#console
+```
+
+You should receive a short banner and `dcc> ` prompt. A client that negotiates Telnet options before sending this line is also supported. Normal DCC and WiThrottle clients continue to use their existing first messages, without entering the console.
+
+Example console session:
+
+```text
+#console
+<s>
+diag on
+<D RAM>
+diag off
+help
+```
+
+`<s>` requests the station status. `diag on` subscribes this console to new `DIAG()` messages; `<D RAM>` produces a memory diagnostic. Use the usual DCC diagnostic commands (for example `<D CMD ON>` / `<D CMD OFF>`) to control the firmware's diagnostic categories. `diag off` stops remote delivery but does not change those global category settings. The existing serial diagnostic output remains available.
+
+Raw `<commands>` execute through CommandDistributor/DCCEXParser, preserving normal command replies, broadcasts, and asynchronous programming responses. Backspace/Delete edit a line; CRLF and CR-NUL are normalized. Maximum input is 127 ASCII characters per line; longer lines are discarded as a whole. Close the connection from your client to release the console.
+
+## Queues, routing, and limits
+
+- A silent connection has not identified its protocol. The idle probe can reach a normal client that delays its first application message beyond the grace period; `WIFI_TELNET_PROBE_MS` sets that delay (default 1000 ms, 0 disables probing). Already identified throttle/DCC clients are never probed. No console text is sent to an unidentified client.
+- Console input is assembled independently per client, including Telnet negotiation split across packets. Option replies and keystroke echo are coalesced in bounded per-session buffers so a negotiation burst does not consume one output slot per option. Unsupported options are refused; subnegotiation is ignored without accumulating data.
+- Four complete commands and eight output messages are buffered with fixed bounds. Command admission reports a full queue. Diagnostic bursts are dropped before consuming the reserved control-message capacity, with a subsequent loss count.
+- Diagnostic output starts on a fresh line and restores the prompt/partially typed input. It is delivered only to the subscribed console; no console greeting or diagnostics are sent to ordinary throttle sessions.
+- WiFi transport tracing remains serial-only to prevent diagnostics about transmitting diagnostics from creating an output loop. Old boot diagnostics are not replayed; the LCD and `<s>` provide startup/status information.
+- Console commands and ordinary inbound traffic alternate when both are pending, while retaining WiThrottle housekeeping and existing AT CIPSEND scheduling.
+- Telnet's literal 0xff bytes use a flagged raw-output path, because RingStream normally interprets 0xff as a flash-string marker. Console command replies carry a separate text marker for CRLF normalization and IAC escaping while retaining logical client IDs for callbacks/virtual displays. Ordinary throttle/WebSocket output keeps its existing format.
+- Disconnect/error handling releases console/subscription state and removes queued messages for that socket while preserving another client's in-flight payload. Session generations reject stale console commands/diagnostics and delayed programming replies after socket reuse. Programming operations themselves are not canceled by closing a console.
+- This feature targets the confirmed 32-bit F439ZI setup. Plain Telnet is for the trusted local network; no Internet exposure or authentication service is included.
+
+## Validation and hardware acceptance
+
+Host checks use the real console, WiFi AT framing, RingStream, and extracted programming callback stash methods with fake UART/core endpoints, under AddressSanitizer/UBSan. They cover fragmented input/options, CR handling, edits, overlong lines, mixed throttle/console traffic, WebSocket prescan preservation, raw negotiation output, queue saturation, diagnostic redraw, disconnect/slot reuse, in-flight output cleanup, circular queue compaction, and delayed callback rejection. They do not establish real ESP timing or iPad compatibility.
+
+```sh
+python3 tests/telnet_console_test.py
+```
+
+Test on the real board:
+
+1. Load the Telnet environment and confirm the display/IP and existing WiThrottle connection still work.
+2. Open the iPad or desktop Telnet connection to port 2560, finish negotiation, enter `#console`, then `<s>`. Confirm single-character echo, Backspace/Delete, and Enter without a visible `^M`.
+3. Enter `diag on`, then `<D RAM>`; confirm a diagnostic appears only in the console.
+4. Operate WiThrottle while sending console commands. Verify turnout/sensor/power updates and continued throttle responses.
+5. Close/reopen the console while the throttle remains connected. Repeat diagnostic subscription; it must be off after reconnect.
+6. Test a boot without a USB host, plus link interruption and reconnect. Programming callback and slow-client behavior need a dedicated hardware test before release.
+
+To return to the display-only firmware:
+
+```sh
+pio run -c platformio-olimex.ini -e Nucleo-F439ZI-Olimex -t upload
+```
+
+A repeatable read-only network acceptance script is also available:
+
+```sh
+python3 tests/hardware/wifi_console_acceptance.py <station-IP>
+```
+
+It requests station status and memory diagnostics, opens a second WiThrottle session for metadata only, checks output isolation, and reconnects the console while the throttle session remains open. It does not acquire locomotives or change power/speed/accessories. On 11 October 2026 this script passed against the user's F439ZI/ESP-01: console status, simultaneous WiThrottle handshake, remote diagnostic delivery/isolation, subscription reset, and retained throttle-session responsiveness. Actual iPad interaction, physical throttle controls, and boot without USB remain user acceptance checks.
+
+## Terminal compatibility follow-up
+
+The original local-echo-only build worked from Mac Telnet but the user reported Mocha on iPad stalled during negotiation and Mac Enter displayed `^M`. The updated handler offers ECHO/SGA before console activation, accepts SGA in both directions, negotiates server echo, echoes Enter as CRLF, and converts console replies from LF to CRLF once. Host tests cover a mobile-style multi-option burst before application input, duplicate acknowledgements, negotiated echo/editing, and unchanged throttle output. A real installed Mac Telnet client also passed negotiation, server echo, editing, and Enter against a localhost bridge running the actual console/ring code. This does not establish Mocha compatibility until the updated firmware is uploaded and tested on the iPad.
+
+To repeat the real Mac client test (requires a local `telnet` executable):
+
+```sh
+DCCEX_TEST_MAC_TELNET=1 python3 tests/telnet_console_test.py
+```
+
+The echo/SGA behavior follows [RFC 857](https://www.rfc-editor.org/rfc/rfc857.html) and [RFC 858](https://www.rfc-editor.org/rfc/rfc858.html).
+
+## Server-first startup correction (12 October 2026)
+
+The user's Mac transcript showed the entry hint only after typing `#console`; iSH's native client connected but never progressed. That revealed the passive-startup limitation. ESP CONNECT/CONNECTED events now arm a bounded one-second idle probe; CLOSED/CONNECT FAIL do not. The probe sends options only, waits for Telnet identification before sending text, and does not take console ownership. Tests cover idle startup, rejected/closed connections, immediate throttle identification, direct entry without a redundant hint, and a real Mac client that receives the entry prompt before any keys are sent. Hardware/iSH/Mocha retests remain pending.
