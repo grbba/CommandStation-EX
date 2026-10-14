@@ -110,14 +110,19 @@ void enter(byte id){packet(id,"#con");packet(id,"sole\r");packet(id,"\n");}
 void diagnostic(const char* text){Print* sink=TelnetConsole::beginDiagnostic();if(sink){sink->print(text);TelnetConsole::endDiagnostic();}}
 int main(){
  WifiInboundHandler::setup(&uart);
+ assert(TelnetConsole::connectionState(5)==TelnetConsole::DISCONNECTED);
+ assert(TelnetConsole::connectionState(255)==TelnetConsole::DISCONNECTED);
  // CONNECT notifications arm the idle timer; CLOSED/CONNECT FAIL must not.
  uart.feed("5,CONNECT\r\n");cycles(50);
+ assert(TelnetConsole::connectionState(5)==TelnetConsole::WAITING);
  size_t idleStart=uart.output.size();cycles(80);
  std::string idle=uart.output.substr(idleStart);
  assert(idle.find(std::string("\xff\xfb\x01",3))!=std::string::npos);
  assert(idle.find("enter #console")==std::string::npos); // no text until Telnet reply
  packet(5,std::string("\xff\xfd\x01\xff\xfd\x03\xff\xfb\x03",9));
+ assert(TelnetConsole::connectionState(5)==TelnetConsole::TELNET);
  assert(uart.output.find("enter #console")!=std::string::npos);close(5);
+ assert(TelnetConsole::connectionState(5)==TelnetConsole::DISCONNECTED);
  idleStart=uart.output.size();uart.feed("5,CONNECT FAIL\r\n");cycles(200);
  assert(uart.output.size()==idleStart);
  // Fast normal clients never receive an idle probe or console greeting.
@@ -125,6 +130,7 @@ int main(){
  uart.feed("1,CONNECT\r\n");cycles(5);
  // A normal throttle passes through unchanged and receives no console greeting.
  packet(1,"NThrottle\n");
+ assert(TelnetConsole::connectionState(1)==TelnetConsole::APP_CLIENT);
  assert(CommandDistributor::calls.back()==std::make_pair((byte)1,std::string("NThrottle\n")));
  assert(uart.output.substr(normalStart).find((char)255)==std::string::npos);
  assert(uart.output.substr(normalStart).find("enter #console")==std::string::npos);
@@ -154,6 +160,7 @@ int main(){
  assert(uart.output.substr(lateStart).find((char)255)==std::string::npos);close(7);
  // A direct entry request must not be followed by a redundant entry hint.
  size_t directStart=uart.output.size();enter(6);
+ assert(TelnetConsole::connectionState(6)==TelnetConsole::TELNET);
  assert(uart.output.substr(directStart).find("enter #console")==std::string::npos);
  close(6);
  // Byte-wise option negotiation must survive the real ring's 0xff marker handling.

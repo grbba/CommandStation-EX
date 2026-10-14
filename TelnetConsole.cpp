@@ -229,6 +229,14 @@ bool TelnetConsole::isConsole(byte client) {
   client &= CLIENT_MASK;
   return client < MAX_NUM_TCP_CLIENTS && sessions[client].mode == CONSOLE;
 }
+TelnetConsole::ConnectionState TelnetConsole::connectionState(byte client) {
+  if (client >= MAX_NUM_TCP_CLIENTS) return DISCONNECTED;
+  const Session &s = sessions[client];
+  // Input can establish a session even when an ESP CONNECT event was missed.
+  if (s.mode == CANDIDATE || s.mode == CONSOLE) return TELNET;
+  if (s.mode == APPLICATION) return APP_CLIENT;
+  return s.connected ? WAITING : DISCONNECTED;
+}
 void TelnetConsole::receive(byte client, byte value) {
   if (!handles(client)) return;
   Session &s = sessions[client];

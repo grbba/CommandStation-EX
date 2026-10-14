@@ -34,6 +34,10 @@ private:
   uint8_t _col = 0;
   uint16_t _scan = 0;
   bool _started = false;
+#ifdef WIFI_TELNET
+  uint32_t _connectionUpdateMs = 0;
+  void updateConnections();
+#endif
   bool drawNextCharacter();
 };
 #endif

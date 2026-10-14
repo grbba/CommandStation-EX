@@ -13,6 +13,8 @@ public:
   static bool claim(byte client, byte first);
   static bool handles(byte client);
   static bool isConsole(byte client);
+  enum ConnectionState : byte { DISCONNECTED, WAITING, TELNET, APP_CLIENT };
+  static ConnectionState connectionState(byte client);
   static void receive(byte client, byte value);
   static void forget(byte client);
   static uint16_t generation(byte client);

@@ -2,6 +2,18 @@
 
 Optional F439ZI firmware adds a Telnet-compatible console on the same ESP-01 WiFi listener as ordinary DCC/WiThrottle clients. It retains the verified Olimex startup display. One console may be active; other sockets remain available to normal clients within the installed ESP AT firmware's connection limit.
 
+## LCD connection counts
+
+The Telnet build uses the bottom LCD row for a live summary, for example:
+
+```text
+WT:1 Tel:1 DCC:0 ?:0
+```
+
+`WT` counts WiThrottle TCP clients, `Tel` counts identified Telnet clients (including terminals that have not entered `#console`), and `DCC` counts raw DCC protocol and established WebSocket clients. `?` counts connected clients that have not identified their protocol or finished the WebSocket handshake. Counts refer to network sessions, not locomotives or individual throttle slots. A Telnet connection is counted even if another terminal owns the single console.
+
+The row updates within roughly a quarter second of a processed connection/classification/disconnection event, with characters drawn incrementally by the display loop. An abruptly lost client stays counted until the ESP reports it disconnected or the existing transport error handling removes it. The IP/port rows and clock row remain available. This summary is enabled only with both the Olimex display and WiFi Telnet features; display-only firmware is unchanged.
+
 ## Build, upload, and connect
 
 Use the existing private config.h and the isolated implementation worktree. Build or upload with:
